@@ -1724,6 +1724,7 @@ dependencies = [
  "atty",
  "axum",
  "base64 0.21.7",
+ "bitflags",
  "chrono",
  "config",
  "criterion",

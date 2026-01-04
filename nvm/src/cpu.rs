@@ -1261,6 +1261,188 @@ impl VirtualCpu {
         state.interrupts_enabled = (value & rflags::IF) != 0;
     }
     
+    // ========================================================================
+    // Flag Convenience Methods (for interpreter)
+    // ========================================================================
+    
+    /// Get CF (carry flag)
+    pub fn get_cf(&self) -> bool {
+        (self.read_rflags() & rflags::CF) != 0
+    }
+    
+    /// Set CF (carry flag)
+    pub fn set_cf(&self) {
+        let mut state = self.state.write().unwrap();
+        state.regs.rflags |= rflags::CF;
+    }
+    
+    /// Set CF (carry flag) to a specific value
+    pub fn set_flag_cf(&self, val: bool) {
+        let mut state = self.state.write().unwrap();
+        if val {
+            state.regs.rflags |= rflags::CF;
+        } else {
+            state.regs.rflags &= !rflags::CF;
+        }
+    }
+    
+    /// Clear CF (carry flag)
+    pub fn clear_cf(&self) {
+        let mut state = self.state.write().unwrap();
+        state.regs.rflags &= !rflags::CF;
+    }
+    
+    /// Complement CF (carry flag)
+    pub fn complement_cf(&self) {
+        let mut state = self.state.write().unwrap();
+        state.regs.rflags ^= rflags::CF;
+    }
+    
+    /// Get ZF (zero flag)
+    pub fn get_zf(&self) -> bool {
+        (self.read_rflags() & rflags::ZF) != 0
+    }
+    
+    /// Set ZF (zero flag)
+    pub fn set_zf(&self, val: bool) {
+        let mut state = self.state.write().unwrap();
+        if val {
+            state.regs.rflags |= rflags::ZF;
+        } else {
+            state.regs.rflags &= !rflags::ZF;
+        }
+    }
+    
+    /// Set ZF (zero flag) - alias for interpreter
+    pub fn set_flag_zf(&self, val: bool) {
+        self.set_zf(val)
+    }
+    
+    /// Get SF (sign flag)
+    pub fn get_sf(&self) -> bool {
+        (self.read_rflags() & rflags::SF) != 0
+    }
+    
+    /// Set SF (sign flag)
+    pub fn set_sf(&self, val: bool) {
+        let mut state = self.state.write().unwrap();
+        if val {
+            state.regs.rflags |= rflags::SF;
+        } else {
+            state.regs.rflags &= !rflags::SF;
+        }
+    }
+    
+    /// Set SF (sign flag) - alias for interpreter
+    pub fn set_flag_sf(&self, val: bool) {
+        self.set_sf(val)
+    }
+    
+    /// Get OF (overflow flag)
+    pub fn get_of(&self) -> bool {
+        (self.read_rflags() & rflags::OF) != 0
+    }
+    
+    /// Set OF (overflow flag)
+    pub fn set_of(&self, val: bool) {
+        let mut state = self.state.write().unwrap();
+        if val {
+            state.regs.rflags |= rflags::OF;
+        } else {
+            state.regs.rflags &= !rflags::OF;
+        }
+    }
+    
+    /// Set OF (overflow flag) - alias for interpreter
+    pub fn set_flag_of(&self, val: bool) {
+        self.set_of(val)
+    }
+    
+    /// Get DF (direction flag)
+    pub fn get_df(&self) -> bool {
+        (self.read_rflags() & rflags::DF) != 0
+    }
+    
+    /// Clear DF (direction flag)
+    pub fn clear_df(&self) {
+        let mut state = self.state.write().unwrap();
+        state.regs.rflags &= !rflags::DF;
+    }
+    
+    /// Set DF (direction flag)
+    pub fn set_df(&self) {
+        let mut state = self.state.write().unwrap();
+        state.regs.rflags |= rflags::DF;
+    }
+    
+    /// Get PF (parity flag)
+    pub fn get_pf(&self) -> bool {
+        (self.read_rflags() & rflags::PF) != 0
+    }
+    
+    /// Set PF (parity flag)
+    pub fn set_pf(&self, val: bool) {
+        let mut state = self.state.write().unwrap();
+        if val {
+            state.regs.rflags |= rflags::PF;
+        } else {
+            state.regs.rflags &= !rflags::PF;
+        }
+    }
+    
+    /// Set PF (parity flag) - alias for interpreter
+    pub fn set_flag_pf(&self, val: bool) {
+        self.set_pf(val)
+    }
+    
+    /// Update arithmetic flags based on result
+    pub fn update_flags(&self, result: u64, size: u8, carry: bool, overflow: bool) {
+        let mut state = self.state.write().unwrap();
+        let flags = &mut state.regs.rflags;
+        
+        // ZF: result is zero
+        if result == 0 {
+            *flags |= rflags::ZF;
+        } else {
+            *flags &= !rflags::ZF;
+        }
+        
+        // SF: sign of result (MSB)
+        let sign_bit = match size {
+            1 => (result >> 7) & 1,
+            2 => (result >> 15) & 1,
+            4 => (result >> 31) & 1,
+            _ => (result >> 63) & 1,
+        };
+        if sign_bit != 0 {
+            *flags |= rflags::SF;
+        } else {
+            *flags &= !rflags::SF;
+        }
+        
+        // PF: parity of low byte
+        let parity = (result as u8).count_ones() & 1 == 0;
+        if parity {
+            *flags |= rflags::PF;
+        } else {
+            *flags &= !rflags::PF;
+        }
+        
+        // CF: carry
+        if carry {
+            *flags |= rflags::CF;
+        } else {
+            *flags &= !rflags::CF;
+        }
+        
+        // OF: overflow
+        if overflow {
+            *flags |= rflags::OF;
+        } else {
+            *flags &= !rflags::OF;
+        }
+    }
+
     /// Read a general purpose register by index (0=RAX, 1=RCX, 2=RDX, etc.)
     pub fn read_gpr(&self, reg: u8) -> u64 {
         let state = self.state.read().unwrap();

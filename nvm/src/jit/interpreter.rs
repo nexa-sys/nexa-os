@@ -173,7 +173,16 @@ impl Interpreter {
             Mnemonic::Hlt => Ok(InstrResult::Exit(ExecuteResult::Halt)),
             Mnemonic::Int | Mnemonic::Int3 => self.exec_int(instr),
             Mnemonic::Iret => self.exec_iret(cpu, memory, instr),
-            Mnemonic::Cpuid => { cpu.cpuid(); Ok(InstrResult::Continue(next_rip)) }
+            Mnemonic::Cpuid => { 
+                let leaf = cpu.read_gpr(0) as u32;    // EAX = leaf
+                let subleaf = cpu.read_gpr(1) as u32; // ECX = subleaf
+                let (eax, ebx, ecx, edx) = cpu.cpuid(leaf, subleaf);
+                cpu.write_gpr(0, eax as u64);
+                cpu.write_gpr(3, ebx as u64);
+                cpu.write_gpr(1, ecx as u64);
+                cpu.write_gpr(2, edx as u64);
+                Ok(InstrResult::Continue(next_rip)) 
+            }
             Mnemonic::Rdtsc => { 
                 let tsc = cpu.rdtsc();
                 cpu.write_gpr(0, tsc & 0xFFFF_FFFF); // EAX
@@ -608,7 +617,7 @@ impl Interpreter {
     
     fn read_reg(&self, cpu: &VirtualCpu, r: &Register) -> JitResult<u64> {
         match r.kind {
-            RegKind::Gpr => Ok(cpu.read_gpr(r.index as usize)),
+            RegKind::Gpr => Ok(cpu.read_gpr(r.index)),
             _ => Ok(0),
         }
     }
@@ -616,7 +625,7 @@ impl Interpreter {
     fn write_reg(&self, cpu: &VirtualCpu, op: &Operand, value: u64) -> JitResult<()> {
         if let Operand::Reg(r) = op {
             if r.kind == RegKind::Gpr {
-                cpu.write_gpr(r.index as usize, value);
+                cpu.write_gpr(r.index, value);
             }
         }
         Ok(())
@@ -624,14 +633,14 @@ impl Interpreter {
     
     fn write_reg_sized(&self, cpu: &VirtualCpu, r: &Register, value: u64) -> JitResult<()> {
         if r.kind == RegKind::Gpr {
-            let current = cpu.read_gpr(r.index as usize);
+            let current = cpu.read_gpr(r.index);
             let new_value = match r.size {
                 1 => (current & !0xFF) | (value & 0xFF),
                 2 => (current & !0xFFFF) | (value & 0xFFFF),
                 4 => value & 0xFFFF_FFFF, // 32-bit writes zero-extend
                 _ => value,
             };
-            cpu.write_gpr(r.index as usize, new_value);
+            cpu.write_gpr(r.index, new_value);
         }
         Ok(())
     }
@@ -662,14 +671,14 @@ impl Interpreter {
         
         if let Some(base) = &m.base {
             addr = match base.kind {
-                RegKind::Gpr => cpu.read_gpr(base.index as usize),
+                RegKind::Gpr => cpu.read_gpr(base.index),
                 RegKind::Rip => instr.rip + instr.len as u64,
                 _ => 0,
             };
         }
         
         if let Some(index) = &m.index {
-            let idx = cpu.read_gpr(index.index as usize);
+            let idx = cpu.read_gpr(index.index);
             addr = addr.wrapping_add(idx.wrapping_mul(m.scale as u64));
         }
         

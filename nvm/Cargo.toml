@@ -44,6 +44,9 @@ tracing = ["dep:tracing", "dep:tracing-subscriber"]  # Detailed execution tracin
 # x86_64 hardware support
 x86_64 = "0.15"
 
+# Utility crates
+bitflags = "2.4"
+
 # Serialization (always enabled for enterprise features)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

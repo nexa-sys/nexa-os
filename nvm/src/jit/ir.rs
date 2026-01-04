@@ -679,18 +679,24 @@ impl IrBuilder {
     }
     
     fn emit_exit(&mut self, reason: ExitReason, rip: u64) {
+        // Collect GPR mappings first to avoid borrow conflict
+        let gpr_instrs: Vec<_> = (0..16).map(|i| IrInstr {
+            dst: VReg::NONE,
+            op: IrOp::StoreGpr(i as u8, self.gpr_map[i]),
+            guest_rip: rip,
+            flags: IrFlags::empty(),
+        }).collect();
+        
         // Store all guest registers
-        for i in 0..16 {
-            self.current_block_mut().push(IrInstr {
-                dst: VReg::NONE,
-                op: IrOp::StoreGpr(i as u8, self.gpr_map[i]),
-                guest_rip: rip,
-                flags: IrFlags::empty(),
-            });
+        for instr in gpr_instrs {
+            self.current_block_mut().push(instr);
         }
+        
+        // Store flags
+        let flags_vreg = self.flags_vreg;
         self.current_block_mut().push(IrInstr {
             dst: VReg::NONE,
-            op: IrOp::StoreFlags(self.flags_vreg),
+            op: IrOp::StoreFlags(flags_vreg),
             guest_rip: rip,
             flags: IrFlags::empty(),
         });
@@ -848,9 +854,10 @@ impl IrBuilder {
     fn emit_flags(&mut self, _op: AluOp, _src1: VReg, _src2: VReg, result: VReg, rip: u64) -> VReg {
         // Simplified: compute flags from result
         let flags = self.block.alloc_vreg();
+        let zero = self.emit_const(0, rip);
         self.current_block_mut().push(IrInstr {
             dst: flags,
-            op: IrOp::Cmp(result, self.emit_const(0, rip)),
+            op: IrOp::Cmp(result, zero),
             guest_rip: rip,
             flags: IrFlags::empty(),
         });

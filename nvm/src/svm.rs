@@ -1046,6 +1046,217 @@ impl Default for SvmManager {
     }
 }
 
+// ============================================================================
+// SVM Executor - Integrates JIT with AMD-V
+// ============================================================================
+
+use crate::jit::{JitEngine, JitConfig, ExecuteResult, JitError};
+use crate::memory::PhysicalMemory;
+
+/// SVM execution loop result
+#[derive(Debug, Clone)]
+pub enum SvmExecResult {
+    /// VM exited normally
+    VmExit(VmExitCode, u64),
+    /// VM halted (HLT instruction)
+    Halted,
+    /// External interrupt pending
+    Interrupt(u8),
+    /// VM was reset
+    Reset,
+    /// Shutdown (triple fault)
+    Shutdown,
+    /// Execution error
+    Error(String),
+}
+
+/// SVM Executor - runs guest code using JIT with SVM controls
+/// 
+/// This is the AMD-V execution engine that:
+/// 1. Uses JIT to execute guest x86-64 instructions
+/// 2. Handles #VMEXIT (I/O, CPUID, MSR, etc.)
+/// 3. Manages NPT translations
+/// 4. Supports SEV encryption
+pub struct SvmExecutor {
+    /// SVM manager for VMCB and NPT
+    svm: Arc<SvmManager>,
+    /// JIT execution engine
+    jit: JitEngine,
+    /// Guest memory (via NPT)
+    memory: Arc<PhysicalMemory>,
+    /// Running flag
+    running: AtomicBool,
+    /// Statistics
+    stats: RwLock<SvmExecStats>,
+}
+
+/// SVM executor statistics
+#[derive(Debug, Clone, Default)]
+pub struct SvmExecStats {
+    /// Instructions executed
+    pub instructions: u64,
+    /// VMRUN count
+    pub vmruns: u64,
+    /// VM exits by code
+    pub vm_exits: HashMap<u64, u64>,
+    /// JIT compilations
+    pub jit_compilations: u64,
+    /// Total execution time (ns)
+    pub exec_time_ns: u64,
+}
+
+impl SvmExecutor {
+    /// Create new SVM executor
+    pub fn new(memory: Arc<PhysicalMemory>) -> Self {
+        let svm = Arc::new(SvmManager::new());
+        
+        Self {
+            svm,
+            jit: JitEngine::new(),
+            memory,
+            running: AtomicBool::new(false),
+            stats: RwLock::new(SvmExecStats::default()),
+        }
+    }
+    
+    /// Create with custom JIT config
+    pub fn with_jit_config(memory: Arc<PhysicalMemory>, jit_config: JitConfig) -> Self {
+        let svm = Arc::new(SvmManager::new());
+        
+        Self {
+            svm,
+            jit: JitEngine::with_config(jit_config),
+            memory,
+            running: AtomicBool::new(false),
+            stats: RwLock::new(SvmExecStats::default()),
+        }
+    }
+    
+    /// Initialize SVM and prepare for execution
+    pub fn init(&self) -> SvmResult<()> {
+        self.svm.enable()?;
+        let vmcb_id = self.svm.create_vmcb()?;
+        self.svm.load_vmcb(vmcb_id)?;
+        Ok(())
+    }
+    
+    /// Run guest until #VMEXIT
+    /// 
+    /// This is the main execution loop (VMRUN):
+    /// 1. Load guest state from VMCB
+    /// 2. Execute guest code via JIT
+    /// 3. Handle #VMEXIT
+    /// 4. Repeat until halt/error
+    pub fn run(&self, cpu: &VirtualCpu) -> SvmExecResult {
+        self.running.store(true, Ordering::SeqCst);
+        
+        // VMRUN - load guest state
+        if let Err(e) = self.svm.vmrun(cpu) {
+            return SvmExecResult::Error(format!("VMRUN failed: {:?}", e));
+        }
+        
+        self.stats.write().unwrap().vmruns += 1;
+        
+        // Execute guest code
+        loop {
+            if !self.running.load(Ordering::SeqCst) {
+                break SvmExecResult::Halted;
+            }
+            
+            // Check GIF (Global Interrupt Flag)
+            if self.svm.get_gif() && cpu.has_pending_interrupt() {
+                if let Some(vector) = cpu.deliver_interrupt() {
+                    let _ = self.svm.vmexit(cpu, VmExitCode::Intr, vector as u64, 0);
+                    break SvmExecResult::Interrupt(vector);
+                }
+            }
+            
+            // Execute via JIT
+            match self.jit.execute(cpu, &self.memory) {
+                Ok(result) => {
+                    match result {
+                        ExecuteResult::Continue { next_rip } => {
+                            cpu.write_rip(next_rip);
+                            continue;
+                        }
+                        ExecuteResult::Halt => {
+                            let _ = self.svm.vmexit(cpu, VmExitCode::Hlt, 0, 0);
+                            break SvmExecResult::Halted;
+                        }
+                        ExecuteResult::Interrupt { vector } => {
+                            let _ = self.svm.vmexit(cpu, VmExitCode::Intr, vector as u64, 0);
+                            break SvmExecResult::Interrupt(vector);
+                        }
+                        ExecuteResult::IoNeeded { port, is_write, size } => {
+                            let info1 = (port as u64) | ((size as u64) << 4) | 
+                                        (if is_write { 0 } else { 1 });
+                            let _ = self.svm.vmexit(cpu, VmExitCode::IoIo, info1, 0);
+                            break SvmExecResult::VmExit(VmExitCode::IoIo, info1);
+                        }
+                        ExecuteResult::Exception { vector, error_code } => {
+                            // Map to SVM exit code
+                            let exit_code = match vector {
+                                0 => VmExitCode::Exception_DE,
+                                6 => VmExitCode::Exception_UD,
+                                13 => VmExitCode::Exception_GP,
+                                14 => VmExitCode::Exception_PF,
+                                _ => VmExitCode::Exception_DE, // Default
+                            };
+                            let info1 = error_code.map(|e| e as u64).unwrap_or(0);
+                            let _ = self.svm.vmexit(cpu, exit_code, info1, 0);
+                            break SvmExecResult::VmExit(exit_code, info1);
+                        }
+                        ExecuteResult::Hypercall { nr, args } => {
+                            let _ = self.svm.vmexit(cpu, VmExitCode::Vmmcall, nr, 0);
+                            break SvmExecResult::VmExit(VmExitCode::Vmmcall, nr);
+                        }
+                        ExecuteResult::Reset => {
+                            break SvmExecResult::Reset;
+                        }
+                        ExecuteResult::Shutdown => {
+                            let _ = self.svm.vmexit(cpu, VmExitCode::Shutdown, 0, 0);
+                            break SvmExecResult::Shutdown;
+                        }
+                        ExecuteResult::MmioNeeded { addr, is_write, size } => {
+                            // NPT fault
+                            let _ = self.svm.vmexit(cpu, VmExitCode::Npf, addr, 0);
+                            break SvmExecResult::VmExit(VmExitCode::Npf, addr);
+                        }
+                    }
+                }
+                Err(e) => {
+                    break SvmExecResult::Error(format!("JIT error: {}", e));
+                }
+            }
+        }
+    }
+    
+    /// Stop execution
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+    
+    /// Check if running
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+    
+    /// Get SVM manager
+    pub fn svm(&self) -> &SvmManager {
+        &self.svm
+    }
+    
+    /// Get JIT engine
+    pub fn jit(&self) -> &JitEngine {
+        &self.jit
+    }
+    
+    /// Get statistics
+    pub fn stats(&self) -> SvmExecStats {
+        self.stats.read().unwrap().clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

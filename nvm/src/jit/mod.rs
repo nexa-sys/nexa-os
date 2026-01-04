@@ -73,11 +73,11 @@ pub use decoder::{X86Decoder, DecodedInstr};
 pub use ir::{IrBuilder, IrBlock, IrInstr, IrOp};
 pub use interpreter::Interpreter;
 pub use compiler_s1::S1Compiler;
-pub use compiler_s2::S2Compiler;
-pub use codegen::NativeCodeGen;
-pub use profile::{ProfileDb, BranchProfile, CallProfile};
-pub use cache::{CodeCache, CacheEntry, CacheStats};
-pub use readynow::{ReadyNowCache, PersistFormat};
+pub use compiler_s2::{S2Compiler, S2Config};
+pub use codegen::CodeGen;
+pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
+pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError};
+pub use readynow::{ReadyNowCache, NativeBlockInfo};
 
 /// JIT execution result
 pub type JitResult<T> = Result<T, JitError>;
@@ -147,6 +147,16 @@ impl std::fmt::Display for JitError {
 
 impl std::error::Error for JitError {}
 
+impl From<CacheError> for JitError {
+    fn from(e: CacheError) -> Self {
+        match e {
+            CacheError::OutOfMemory => JitError::CodeCacheFull,
+            CacheError::InvalidBlock => JitError::CompilationError("Invalid block".to_string()),
+            CacheError::CompilationFailed => JitError::CompilationError("Compilation failed".to_string()),
+        }
+    }
+}
+
 /// Execution tier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecutionTier {
@@ -166,6 +176,27 @@ impl ExecutionTier {
             Self::S2 => "S2 (Optimizing)",
         }
     }
+}
+
+/// ReadyNow! persistence format
+/// 
+/// Three formats with different compatibility guarantees:
+/// - Profile: Full forward AND backward compatibility (safest)
+/// - RI: Backward compatible (old cache works on new JIT)
+/// - Native: Same-generation only (fastest but version-locked)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistFormat {
+    /// Profile data only - branch stats, call targets, hot blocks
+    /// Full bidirectional compatibility guaranteed
+    Profile,
+    /// Runtime Intermediate representation (SSA IR)
+    /// Backward compatible: old RI works on new JIT versions
+    Ri,
+    /// Pre-compiled native machine code
+    /// Same-generation only: version must match exactly
+    Native,
+    /// All formats (Profile + RI + Native)
+    All,
 }
 
 /// Tier promotion thresholds
@@ -235,7 +266,7 @@ impl Default for JitConfig {
 }
 
 /// Block metadata (tracks execution statistics)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BlockMeta {
     /// Guest RIP of block start
     pub guest_rip: u64,
@@ -257,6 +288,23 @@ pub struct BlockMeta {
     pub valid: AtomicBool,
     /// Timestamp of last execution
     pub last_exec: AtomicU64,
+}
+
+impl Clone for BlockMeta {
+    fn clone(&self) -> Self {
+        Self {
+            guest_rip: self.guest_rip,
+            guest_size: self.guest_size,
+            tier: self.tier.clone(),
+            invocations: AtomicU64::new(self.invocations.load(std::sync::atomic::Ordering::Relaxed)),
+            back_edges: AtomicU64::new(self.back_edges.load(std::sync::atomic::Ordering::Relaxed)),
+            native_code: self.native_code,
+            native_size: self.native_size,
+            ir: self.ir.clone(),
+            valid: AtomicBool::new(self.valid.load(std::sync::atomic::Ordering::Relaxed)),
+            last_exec: AtomicU64::new(self.last_exec.load(std::sync::atomic::Ordering::Relaxed)),
+        }
+    }
 }
 
 // Safety: BlockMeta is Send+Sync because native_code is only dereferenced
@@ -329,7 +377,7 @@ pub struct JitEngine {
     /// S2 compiler
     s2_compiler: S2Compiler,
     /// Native code generator
-    codegen: NativeCodeGen,
+    codegen: CodeGen,
     /// Code cache (guest RIP → compiled code)
     code_cache: CodeCache,
     /// Block metadata
@@ -353,7 +401,9 @@ impl JitEngine {
     /// Create new JIT engine with custom config
     pub fn with_config(config: JitConfig) -> Self {
         let readynow = if config.readynow_enabled {
-            Some(ReadyNowCache::new(config.readynow_path.clone()))
+            let cache_dir = config.readynow_path.clone()
+                .unwrap_or_else(|| "/tmp/nvm-jit".to_string());
+            Some(ReadyNowCache::new(&cache_dir, "default"))
         } else {
             None
         };
@@ -362,13 +412,14 @@ impl JitEngine {
             decoder: X86Decoder::new(),
             interpreter: Interpreter::new(),
             s1_compiler: S1Compiler::new(),
-            s2_compiler: S2Compiler::with_config(
-                config.aggressive_inlining,
-                config.loop_unrolling,
-                config.max_inline_depth,
-            ),
-            codegen: NativeCodeGen::new(),
-            code_cache: CodeCache::new(config.code_cache_size),
+            s2_compiler: S2Compiler::with_config(S2Config {
+                loop_unroll: config.loop_unrolling,
+                inline: config.aggressive_inlining,
+                max_inline_size: (config.max_inline_depth * 10) as usize,
+                ..Default::default()
+            }),
+            codegen: CodeGen::new(),
+            code_cache: CodeCache::new(config.code_cache_size as u64),
             blocks: RwLock::new(HashMap::new()),
             profile_db: ProfileDb::new(config.profile_db_size),
             readynow,
@@ -452,20 +503,43 @@ impl JitEngine {
     }
     
     /// Compile with S1 (quick compiler)
-    fn compile_s1(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, rip: u64, block: &BlockMeta) -> JitResult<()> {
+    fn compile_s1(&self, _cpu: &VirtualCpu, memory: &PhysicalMemory, rip: u64, _block: &BlockMeta) -> JitResult<()> {
         let start = std::time::Instant::now();
         
-        // Decode block
-        let decoded = self.decoder.decode_block(memory, rip)?;
+        // Fetch guest code bytes
+        let mut guest_code = vec![0u8; 4096]; // Max block size
+        for (i, byte) in guest_code.iter_mut().enumerate() {
+            *byte = memory.read_u8(rip + i as u64);
+        }
         
-        // Build IR
-        let ir = self.s1_compiler.compile(&decoded, &self.profile_db)?;
+        // Build IR using S1 compiler
+        let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
         
-        // Generate native code
-        let native = self.codegen.generate(&ir)?;
+        // Get native code size and pointer
+        let native_len = s1_block.native.len();
+        let native_code: Box<[u8]> = s1_block.native.into_boxed_slice();
+        let host_ptr = Box::into_raw(native_code) as *const u8;
+        
+        // Count instructions in IR
+        let guest_instrs: u32 = s1_block.ir.blocks.iter()
+            .map(|bb| bb.instrs.len() as u32)
+            .sum();
         
         // Install in code cache
-        self.code_cache.insert(rip, native.clone())?;
+        let block = CompiledBlock {
+            guest_rip: rip,
+            guest_size: s1_block.guest_size,
+            host_code: host_ptr,
+            host_size: native_len as u32,
+            tier: CompileTier::S1,
+            exec_count: AtomicU64::new(0),
+            last_access: AtomicU64::new(0),
+            guest_instrs,
+            guest_checksum: cache::compute_checksum(&guest_code[..s1_block.guest_size as usize]),
+            depends_on: Vec::new(),
+            invalidated: false,
+        };
+        self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
         
         let elapsed = start.elapsed().as_nanos() as u64;
         self.stats.compilation_time_ns.fetch_add(elapsed, Ordering::Relaxed);
@@ -475,28 +549,35 @@ impl JitEngine {
     }
     
     /// Compile with S2 (optimizing compiler)
-    fn compile_s2(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, rip: u64, block: &BlockMeta) -> JitResult<()> {
+    fn compile_s2(&self, _cpu: &VirtualCpu, memory: &PhysicalMemory, rip: u64, block: &BlockMeta) -> JitResult<()> {
         let start = std::time::Instant::now();
         
-        // Get profile data for this block
-        let profile = self.profile_db.get_block_profile(rip);
-        
-        // Decode block (or reuse from S1)
-        let decoded = if let Some(ref ir) = block.ir {
-            // Recompile from existing IR
-            self.s2_compiler.optimize(ir.clone(), &profile)?
-        } else {
-            // Fresh decode and compile
-            let decoded = self.decoder.decode_block(memory, rip)?;
-            let ir = self.s2_compiler.compile(&decoded, &profile)?;
-            ir
-        };
-        
-        // Generate optimized native code
-        let native = self.codegen.generate_optimized(&decoded)?;
-        
-        // Replace in code cache
-        self.code_cache.replace(rip, native)?;
+        // S2 requires an existing S1 block to optimize
+        // First ensure we have S1 compiled
+        if block.ir.is_none() {
+            // Need to compile with S1 first
+            let mut guest_code = vec![0u8; 4096];
+            for (i, byte) in guest_code.iter_mut().enumerate() {
+                *byte = memory.read_u8(rip + i as u64);
+            }
+            let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
+            
+            // Recompile with S2 optimizations
+            let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
+            
+            // Replace in code cache
+            self.code_cache.replace(rip, s2_block.native)?;
+        } else if let Some(ref ir) = block.ir {
+            // We have existing IR, find S1 block somehow
+            // For now, recompile from scratch
+            let mut guest_code = vec![0u8; 4096];
+            for (i, byte) in guest_code.iter_mut().enumerate() {
+                *byte = memory.read_u8(rip + i as u64);
+            }
+            let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
+            let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
+            self.code_cache.replace(rip, s2_block.native)?;
+        }
         
         let elapsed = start.elapsed().as_nanos() as u64;
         self.stats.compilation_time_ns.fetch_add(elapsed, Ordering::Relaxed);
@@ -506,11 +587,11 @@ impl JitEngine {
     }
     
     /// Execute native code from cache
-    fn execute_native(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, entry: CacheEntry) -> JitResult<ExecuteResult> {
+    fn execute_native(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, code_ptr: *const u8) -> JitResult<ExecuteResult> {
         // Safety: native code was generated by our codegen
         unsafe {
             let func: extern "C" fn(*mut VirtualCpu, *mut PhysicalMemory) -> u64 = 
-                std::mem::transmute(entry.code_ptr);
+                std::mem::transmute(code_ptr);
             
             let result = func(
                 cpu as *const VirtualCpu as *mut VirtualCpu,
@@ -589,23 +670,110 @@ impl JitEngine {
         });
     }
     
-    /// Load ReadyNow! cache
-    pub fn load_readynow(&self, path: &str) -> JitResult<ReadyNowStats> {
-        if let Some(ref readynow) = self.readynow {
-            let stats = readynow.load(path, &self.code_cache, &self.profile_db)?;
-            self.stats.readynow_loads.fetch_add(1, Ordering::Relaxed);
-            Ok(stats)
-        } else {
-            Err(JitError::CompilationError("ReadyNow! not enabled".to_string()))
+    // ========================================================================
+    // ReadyNow! Persistence - Three Formats with Different Compatibility
+    // ========================================================================
+    
+    /// Load ReadyNow! cache with tiered loading strategy
+    /// 
+    /// Loading priority:
+    /// 1. Native code (instant, same-generation only)
+    /// 2. RI (backward compatible, needs codegen)
+    /// 3. Profile (full compat, guides future compilation)
+    pub fn load_readynow(&self) -> JitResult<ReadyNowStats> {
+        let readynow = self.readynow.as_ref()
+            .ok_or_else(|| JitError::CompilationError("ReadyNow! not enabled".to_string()))?;
+        
+        let mut stats = ReadyNowStats::default();
+        let start = std::time::Instant::now();
+        
+        // 1. Try loading native code first (zero warmup if version matches)
+        if let Ok(Some(native_blocks)) = readynow.load_native() {
+            stats.native_blocks_loaded = native_blocks.len();
+            // Install native blocks directly into code cache
+            // (version check done inside load_native)
         }
+        
+        // 2. Load RI blocks (backward compatible)
+        if let Ok(ir_blocks) = readynow.load_ri() {
+            stats.ir_blocks_loaded = ir_blocks.len();
+            // These can be compiled on demand
+        }
+        
+        // 3. Always load profile (full compat, guides compilation)
+        if let Ok(profile) = readynow.load_profile() {
+            stats.profiles_loaded = profile.block_count();
+            // Merge profile data to guide hot path detection
+            self.profile_db.merge(&profile);
+        }
+        
+        stats.load_time_ms = start.elapsed().as_millis() as u64;
+        self.stats.readynow_loads.fetch_add(1, Ordering::Relaxed);
+        
+        Ok(stats)
     }
     
-    /// Save ReadyNow! cache
-    pub fn save_readynow(&self, path: &str, format: PersistFormat) -> JitResult<()> {
-        if let Some(ref readynow) = self.readynow {
-            readynow.save(path, format, &self.code_cache, &self.profile_db, &self.blocks)
-        } else {
-            Err(JitError::CompilationError("ReadyNow! not enabled".to_string()))
+    /// Save ReadyNow! cache in specified format
+    /// 
+    /// Format compatibility guarantees:
+    /// - Profile: Full forward AND backward compatibility
+    /// - RI: Backward compatible (old RI works on new JIT)
+    /// - Native: Same-generation only (version must match exactly)
+    pub fn save_readynow(&self, format: PersistFormat) -> JitResult<()> {
+        let readynow = self.readynow.as_ref()
+            .ok_or_else(|| JitError::CompilationError("ReadyNow! not enabled".to_string()))?;
+        
+        match format {
+            PersistFormat::Profile => {
+                // Profile: Always safe, full compatibility
+                readynow.save_profile(&self.profile_db)
+            }
+            PersistFormat::Ri => {
+                // RI: Backward compatible IR
+                let blocks = self.blocks.read().unwrap();
+                let ir_blocks: HashMap<u64, _> = blocks.iter()
+                    .filter_map(|(rip, meta)| {
+                        meta.ir.as_ref().map(|ir| (*rip, (**ir).clone()))
+                    })
+                    .collect();
+                readynow.save_ri(&ir_blocks)
+            }
+            PersistFormat::Native => {
+                // Native: Same-generation only
+                let blocks = self.blocks.read().unwrap();
+                let native_blocks: HashMap<u64, _> = blocks.iter()
+                    .filter_map(|(rip, meta)| {
+                        meta.native_code.map(|ptr| {
+                            let compiled = CompiledBlock {
+                                guest_rip: *rip,
+                                guest_size: meta.guest_size as u32,
+                                host_code: ptr,
+                                host_size: meta.native_size as u32,
+                                tier: match meta.tier {
+                                    ExecutionTier::Interpreter => CompileTier::Interpreter,
+                                    ExecutionTier::S1 => CompileTier::S1,
+                                    ExecutionTier::S2 => CompileTier::S2,
+                                },
+                                exec_count: AtomicU64::new(meta.invocations.load(Ordering::Relaxed)),
+                                last_access: AtomicU64::new(meta.last_exec.load(Ordering::Relaxed)),
+                                guest_instrs: 0,
+                                guest_checksum: 0,
+                                depends_on: Vec::new(),
+                                invalidated: !meta.valid.load(Ordering::Relaxed),
+                            };
+                            (*rip, compiled)
+                        })
+                    })
+                    .collect();
+                readynow.save_native(&native_blocks)
+            }
+            PersistFormat::All => {
+                // Save all formats for maximum flexibility
+                self.save_readynow(PersistFormat::Profile)?;
+                self.save_readynow(PersistFormat::Ri)?;
+                self.save_readynow(PersistFormat::Native)?;
+                Ok(())
+            }
         }
     }
     

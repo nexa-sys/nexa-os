@@ -128,6 +128,9 @@ pub mod debugger;
 pub mod vmstate;  // VM state persistence
 pub mod executor; // VM execution engine (QEMU integration)
 
+// JIT execution engine
+pub mod jit;      // Tiered JIT compiler (Interpreter → S1 → S2)
+
 // Hardware virtualization extensions
 pub mod vmx;      // Intel VT-x
 pub mod svm;      // AMD-V (SVM)
@@ -179,6 +182,9 @@ pub use templates::{Template, TemplateLibrary, OvaImporter, OvaExporter};
 pub use auth::{AuthManager, AuthBackend, AuthenticatedUser};
 pub use licensing::{License, LicenseValidator, FeatureGate, Edition};
 pub use ha::{RaftNode, FencingManager, FailoverManager, HaConfig};
+
+// Re-export JIT engine (for direct use when not using VMX/SVM)
+pub use jit::{JitEngine, JitConfig, ExecutionTier};
 
 /// NVM version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

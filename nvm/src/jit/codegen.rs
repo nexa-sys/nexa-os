@@ -8,7 +8,7 @@
 //! - Relocation and patching
 
 use super::{JitResult, JitError};
-use super::ir::{IrBlock, IrInstr, IrOp, VReg, ExitReason};
+use super::ir::{IrBlock, IrInstr, IrOp, VReg, IrFlags, BlockId};
 use super::cache::{CodeRegion, CompiledBlock, CompileTier, compute_checksum};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
@@ -215,9 +215,9 @@ impl CodeGen {
         self.reg_alloc = reg_alloc;
         self.frame_size = (spills.len() * 8) as u32;
         
-        // Assign spill slots
+        // Assign spill slots (negative offsets from rbp)
         for (i, &vreg) in spills.iter().enumerate() {
-            self.spill_slots.insert(vreg, -((i + 1) * 8) as i32);
+            self.spill_slots.insert(vreg, -(((i + 1) * 8) as i32));
         }
         
         let mut buf = CodeBuffer::new();
@@ -232,8 +232,6 @@ impl CodeGen {
             for instr in &bb.instrs {
                 self.emit_instr(&mut buf, instr)?;
             }
-            
-            self.emit_exit(&mut buf, &bb.exit, bb_idx as u32)?;
         }
         
         // Epilogue
@@ -285,22 +283,41 @@ impl CodeGen {
     }
     
     fn emit_instr(&self, buf: &mut CodeBuffer, instr: &IrInstr) -> JitResult<()> {
+        let dst = instr.dst;
+        
         match &instr.op {
-            IrOp::LoadConst(dst, val) => {
-                let reg = self.get_reg(*dst)?;
-                self.emit_mov_imm64(buf, reg, *val);
+            IrOp::Const(val) => {
+                let reg = self.get_reg(dst)?;
+                self.emit_mov_imm64(buf, reg, *val as u64);
             }
             
-            IrOp::Copy(dst, src) => {
-                let dreg = self.get_reg(*dst)?;
-                let sreg = self.get_reg(*src)?;
-                if dreg != sreg {
-                    self.emit_mov_reg_reg(buf, dreg, sreg);
-                }
+            IrOp::ConstF64(_) => {
+                // Floating point - would use XMM registers
+                buf.emit(0x90); // NOP placeholder
             }
             
-            IrOp::Add(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::LoadGpr(idx) => {
+                let dreg = self.get_reg(dst)?;
+                // Would load from guest CPU state
+                self.emit_mov_imm64(buf, dreg, *idx as u64);
+            }
+            
+            IrOp::StoreGpr(idx, val) => {
+                let vreg = self.get_reg(*val)?;
+                let _ = (idx, vreg); // Would store to guest CPU state
+            }
+            
+            IrOp::LoadFlags | IrOp::LoadRip => {
+                let dreg = self.get_reg(dst)?;
+                self.emit_mov_imm64(buf, dreg, 0); // Placeholder
+            }
+            
+            IrOp::StoreFlags(_) | IrOp::StoreRip(_) => {
+                // Would store to guest CPU state
+            }
+            
+            IrOp::Add(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -310,8 +327,8 @@ impl CodeGen {
                 self.emit_alu_reg_reg(buf, AluOp::Add, dreg, breg);
             }
             
-            IrOp::Sub(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Sub(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -321,8 +338,8 @@ impl CodeGen {
                 self.emit_alu_reg_reg(buf, AluOp::Sub, dreg, breg);
             }
             
-            IrOp::And(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::And(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -332,8 +349,8 @@ impl CodeGen {
                 self.emit_alu_reg_reg(buf, AluOp::And, dreg, breg);
             }
             
-            IrOp::Or(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Or(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -343,8 +360,8 @@ impl CodeGen {
                 self.emit_alu_reg_reg(buf, AluOp::Or, dreg, breg);
             }
             
-            IrOp::Xor(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Xor(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -354,36 +371,38 @@ impl CodeGen {
                 self.emit_alu_reg_reg(buf, AluOp::Xor, dreg, breg);
             }
             
-            IrOp::Mul(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Mul(a, b) | IrOp::IMul(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
-                // imul dst, a, b
-                // First move a to dst, then imul dst, b
                 if dreg != areg {
                     self.emit_mov_reg_reg(buf, dreg, areg);
                 }
                 self.emit_imul_reg_reg(buf, dreg, breg);
             }
             
-            IrOp::Shl(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Div(_, _) | IrOp::IDiv(_, _) => {
+                // Division requires special handling (RAX:RDX)
+                buf.emit(0x90); // Placeholder
+            }
+            
+            IrOp::Shl(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
                 if dreg != areg {
                     self.emit_mov_reg_reg(buf, dreg, areg);
                 }
-                // Move count to CL
                 if breg != HostReg::RCX {
                     self.emit_mov_reg_reg(buf, HostReg::RCX, breg);
                 }
                 self.emit_shift(buf, ShiftOp::Shl, dreg);
             }
             
-            IrOp::Shr(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Shr(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -396,8 +415,8 @@ impl CodeGen {
                 self.emit_shift(buf, ShiftOp::Shr, dreg);
             }
             
-            IrOp::Sar(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Sar(a, b) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
@@ -410,8 +429,13 @@ impl CodeGen {
                 self.emit_shift(buf, ShiftOp::Sar, dreg);
             }
             
-            IrOp::Neg(dst, a) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Rol(_, _) | IrOp::Ror(_, _) => {
+                // Rotate instructions
+                buf.emit(0x90); // Placeholder
+            }
+            
+            IrOp::Neg(a) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 
                 if dreg != areg {
@@ -420,8 +444,8 @@ impl CodeGen {
                 self.emit_neg(buf, dreg);
             }
             
-            IrOp::Not(dst, a) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Not(a) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*a)?;
                 
                 if dreg != areg {
@@ -430,26 +454,26 @@ impl CodeGen {
                 self.emit_not(buf, dreg);
             }
             
-            IrOp::Load8(dst, addr) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Load8(addr) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*addr)?;
                 self.emit_load(buf, dreg, areg, 1);
             }
             
-            IrOp::Load16(dst, addr) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Load16(addr) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*addr)?;
                 self.emit_load(buf, dreg, areg, 2);
             }
             
-            IrOp::Load32(dst, addr) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Load32(addr) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*addr)?;
                 self.emit_load(buf, dreg, areg, 4);
             }
             
-            IrOp::Load64(dst, addr) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Load64(addr) => {
+                let dreg = self.get_reg(dst)?;
                 let areg = self.get_reg(*addr)?;
                 self.emit_load(buf, dreg, areg, 8);
             }
@@ -478,82 +502,152 @@ impl CodeGen {
                 self.emit_store(buf, areg, vreg, 8);
             }
             
-            IrOp::Compare(dst, a, b) => {
-                let dreg = self.get_reg(*dst)?;
+            IrOp::Cmp(a, b) | IrOp::Test(a, b) => {
                 let areg = self.get_reg(*a)?;
                 let breg = self.get_reg(*b)?;
                 
-                // cmp a, b; sete/setne/... dst
-                self.emit_cmp_reg_reg(buf, areg, breg);
-                // For now, just zero dst (would need to track comparison type)
+                if matches!(instr.op, IrOp::Cmp(_, _)) {
+                    self.emit_cmp_reg_reg(buf, areg, breg);
+                } else {
+                    self.emit_test_reg_reg(buf, areg, breg);
+                }
+            }
+            
+            IrOp::GetCF(_) | IrOp::GetZF(_) | IrOp::GetSF(_) | 
+            IrOp::GetOF(_) | IrOp::GetPF(_) => {
+                let dreg = self.get_reg(dst)?;
+                // Would extract flag from RFLAGS
                 self.emit_xor_reg_reg(buf, dreg, dreg);
             }
             
+            IrOp::Select(cond, t, f) => {
+                let dreg = self.get_reg(dst)?;
+                let creg = self.get_reg(*cond)?;
+                let treg = self.get_reg(*t)?;
+                let freg = self.get_reg(*f)?;
+                
+                // cmovnz dst, true_val; cmovz dst, false_val
+                self.emit_test_reg_reg(buf, creg, creg);
+                self.emit_mov_reg_reg(buf, dreg, freg);
+                // Would add cmovnz here
+                let _ = treg;
+            }
+            
+            IrOp::Sext8(v) | IrOp::Sext16(v) | IrOp::Sext32(v) |
+            IrOp::Zext8(v) | IrOp::Zext16(v) | IrOp::Zext32(v) |
+            IrOp::Trunc8(v) | IrOp::Trunc16(v) | IrOp::Trunc32(v) => {
+                let dreg = self.get_reg(dst)?;
+                let vreg = self.get_reg(*v)?;
+                if dreg != vreg {
+                    self.emit_mov_reg_reg(buf, dreg, vreg);
+                }
+                // Would apply appropriate extension/truncation
+            }
+            
+            // Control flow terminators
+            IrOp::Jump(target) => {
+                buf.emit(0xE9); // JMP rel32
+                buf.emit_label_ref(target.0, RelocKind::Rel32);
+            }
+            
+            IrOp::Branch(cond, true_block, false_block) => {
+                let creg = self.get_reg(*cond)?;
+                
+                // test cond, cond
+                self.emit_test_reg_reg(buf, creg, creg);
+                
+                // jnz true_block
+                buf.emit_bytes(&[0x0F, 0x85]); // JNZ rel32
+                buf.emit_label_ref(true_block.0, RelocKind::Rel32);
+                
+                // jmp false_block
+                buf.emit(0xE9);
+                buf.emit_label_ref(false_block.0, RelocKind::Rel32);
+            }
+            
             IrOp::Call(target) => {
+                // Direct call
+                buf.emit(0xE8); // CALL rel32
+                buf.emit_i32((*target as i64 - (buf.len() as i64 + 4)) as i32);
+            }
+            
+            IrOp::CallIndirect(target) => {
                 let treg = self.get_reg(*target)?;
                 self.emit_call_reg(buf, treg);
+            }
+            
+            IrOp::Ret => {
+                // Will fall through to epilogue
+            }
+            
+            IrOp::Syscall => {
+                buf.emit_bytes(&[0x0F, 0x05]); // SYSCALL
+            }
+            
+            IrOp::Cpuid => {
+                buf.emit_bytes(&[0x0F, 0xA2]); // CPUID
+            }
+            
+            IrOp::Rdtsc => {
+                buf.emit_bytes(&[0x0F, 0x31]); // RDTSC
+            }
+            
+            IrOp::Hlt => {
+                buf.emit(0xF4); // HLT
             }
             
             IrOp::Nop => {
                 buf.emit(0x90);
             }
             
-            _ => {
-                // Unhandled instruction
-                buf.emit(0x90);
-            }
-        }
-        
-        Ok(())
-    }
-    
-    fn emit_exit(&self, buf: &mut CodeBuffer, exit: &ExitReason, _bb_idx: u32) -> JitResult<()> {
-        match exit {
-            ExitReason::Jump(target) => {
-                let treg = self.get_reg(*target)?;
-                self.emit_jmp_reg(buf, treg);
+            IrOp::In8(port) | IrOp::In16(port) | IrOp::In32(port) => {
+                let preg = self.get_reg(*port)?;
+                // IN instruction requires DX for port
+                if preg != HostReg::RDX {
+                    self.emit_mov_reg_reg(buf, HostReg::RDX, preg);
+                }
+                match &instr.op {
+                    IrOp::In8(_) => buf.emit_bytes(&[0xEC]), // IN AL, DX
+                    IrOp::In16(_) => buf.emit_bytes(&[0x66, 0xED]), // IN AX, DX
+                    _ => buf.emit(0xED), // IN EAX, DX
+                }
             }
             
-            ExitReason::Branch { cond, target, fallthrough } => {
-                let creg = self.get_reg(*cond)?;
-                let _treg = self.get_reg(*target)?;
-                let freg = self.get_reg(*fallthrough)?;
+            IrOp::Out8(port, val) | IrOp::Out16(port, val) | IrOp::Out32(port, val) => {
+                let preg = self.get_reg(*port)?;
+                let vreg = self.get_reg(*val)?;
                 
-                // test cond, cond
-                self.emit_test_reg_reg(buf, creg, creg);
-                
-                // jnz taken (would need label)
-                buf.emit_bytes(&[0x75, 0x00]); // Placeholder
-                
-                // fallthrough
-                self.emit_jmp_reg(buf, freg);
+                if preg != HostReg::RDX {
+                    self.emit_mov_reg_reg(buf, HostReg::RDX, preg);
+                }
+                if vreg != HostReg::RAX {
+                    self.emit_mov_reg_reg(buf, HostReg::RAX, vreg);
+                }
+                match &instr.op {
+                    IrOp::Out8(_, _) => buf.emit_bytes(&[0xEE]), // OUT DX, AL
+                    IrOp::Out16(_, _) => buf.emit_bytes(&[0x66, 0xEF]), // OUT DX, AX
+                    _ => buf.emit(0xEF), // OUT DX, EAX
+                }
             }
             
-            ExitReason::IndirectJump(target) => {
-                let treg = self.get_reg(*target)?;
-                self.emit_jmp_reg(buf, treg);
+            IrOp::Phi(_) => {
+                // Phi nodes are resolved during register allocation
             }
             
-            ExitReason::Return(_) => {
-                // Will fall through to epilogue
-            }
-            
-            ExitReason::Halt => {
-                // Return halt code
-                self.emit_mov_imm64(buf, HostReg::RAX, 1);
-            }
-            
-            ExitReason::Interrupt(vec) => {
-                self.emit_mov_imm64(buf, HostReg::RAX, (*vec as u64) | 0x100);
-            }
-            
-            ExitReason::IoNeeded { port, is_write, size } => {
-                let code = ((*port as u64) << 16) | ((*size as u64) << 8) | (*is_write as u64);
-                self.emit_mov_imm64(buf, HostReg::RAX, code | 0x200);
-            }
-            
-            ExitReason::Fallthrough => {
-                // Continue to next block
+            IrOp::Exit(reason) => {
+                // Exit VM - store exit reason in RAX and return
+                let code = match reason {
+                    super::ir::ExitReason::Normal => 0,
+                    super::ir::ExitReason::Halt => 1,
+                    super::ir::ExitReason::Interrupt(v) => 0x100 | (*v as u64),
+                    super::ir::ExitReason::Exception(v, _) => 0x200 | (*v as u64),
+                    super::ir::ExitReason::IoRead(p, s) => 0x300 | ((*p as u64) << 8) | (*s as u64),
+                    super::ir::ExitReason::IoWrite(p, s) => 0x400 | ((*p as u64) << 8) | (*s as u64),
+                    super::ir::ExitReason::Mmio(_, _, _) => 0x500,
+                    super::ir::ExitReason::Hypercall => 0x600,
+                    super::ir::ExitReason::Reset => 0x700,
+                };
+                self.emit_mov_imm64(buf, HostReg::RAX, code);
             }
         }
         

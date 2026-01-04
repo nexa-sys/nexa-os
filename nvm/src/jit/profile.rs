@@ -10,6 +10,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::sync::RwLock;
 
+/// Complete profile data for a basic block
+#[derive(Debug, Clone, Default)]
+pub struct BlockProfile {
+    pub rip: u64,
+    pub execution_count: u64,
+    pub branch_taken: u64,
+    pub branch_not_taken: u64,
+    pub call_target: Option<u64>,
+    pub call_mono_ratio: Option<f64>,
+}
+
 /// Profile database for JIT compilation decisions
 pub struct ProfileDb {
     /// Block execution counts: rip -> count
@@ -326,6 +337,22 @@ impl ProfileDb {
         self.get_block_count(rip) >= threshold
     }
     
+    /// Get complete profile data for a block
+    pub fn get_block_profile(&self, rip: u64) -> BlockProfile {
+        let count = self.get_block_count(rip);
+        let branch_stats = self.get_branch_stats(rip);
+        let call_target = self.get_call_target(rip);
+        
+        BlockProfile {
+            rip,
+            execution_count: count,
+            branch_taken: branch_stats.map(|(t, _)| t).unwrap_or(0),
+            branch_not_taken: branch_stats.map(|(_, n)| n).unwrap_or(0),
+            call_target: call_target.map(|(t, _)| t),
+            call_mono_ratio: call_target.map(|(_, r)| r),
+        }
+    }
+
     /// Get top N hottest blocks
     pub fn hot_blocks(&self, n: usize) -> Vec<(u64, u64)> {
         let counts = self.block_counts.read().unwrap();
@@ -566,6 +593,39 @@ impl ProfileDb {
         self.call_profiles.write().unwrap().clear();
         self.loop_profiles.write().unwrap().clear();
         self.memory_profiles.write().unwrap().clear();
+    }
+    
+    /// Get the number of profiled blocks
+    pub fn block_count(&self) -> usize {
+        self.block_counts.read().unwrap().len()
+    }
+    
+    /// Merge another profile database into this one
+    /// 
+    /// This is used by ReadyNow! to combine persisted profile data
+    /// with runtime data. Values are added together for counters.
+    pub fn merge(&self, other: &ProfileDb) {
+        // Merge block counts
+        let other_blocks = other.block_counts.read().unwrap();
+        let mut our_blocks = self.block_counts.write().unwrap();
+        for (rip, count) in other_blocks.iter() {
+            let other_count = count.load(Ordering::Relaxed);
+            our_blocks.entry(*rip)
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(other_count, Ordering::Relaxed);
+        }
+        drop(other_blocks);
+        drop(our_blocks);
+        
+        // Merge branch profiles
+        let other_branches = other.branch_profiles.read().unwrap();
+        let mut our_branches = self.branch_profiles.write().unwrap();
+        for (rip, profile) in other_branches.iter() {
+            let entry = our_branches.entry(*rip)
+                .or_insert_with(BranchProfile::default);
+            entry.taken.fetch_add(profile.taken.load(Ordering::Relaxed), Ordering::Relaxed);
+            entry.not_taken.fetch_add(profile.not_taken.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
     
     /// Statistics

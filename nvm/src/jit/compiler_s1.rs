@@ -5,10 +5,9 @@
 //! Used for warm-up before S2 kicks in.
 
 use super::{JitResult, JitError};
-use super::ir::{IrBlock, IrInstr, IrOp, VReg, ExitReason, IrBuilder};
+use super::ir::{IrBlock, IrBasicBlock, IrInstr, IrOp, IrFlags, VReg, BlockId, ExitReason, IrBuilder};
 use super::decoder::{X86Decoder, DecodedInstr, Mnemonic};
 use super::profile::ProfileDb;
-use super::cache::CompileTier;
 
 /// S1 compiler configuration
 #[derive(Clone, Debug)]
@@ -72,27 +71,26 @@ impl S1Compiler {
         decoder: &X86Decoder,
         profile: &ProfileDb,
     ) -> JitResult<S1Block> {
-        // Build IR from decoded instructions
-        let mut builder = IrBuilder::new(start_rip);
+        // Decode instructions first
+        let mut instrs = Vec::new();
         let mut offset = 0usize;
-        let mut instr_count = 0;
         
-        while offset < guest_code.len() && instr_count < self.config.max_instrs {
+        while offset < guest_code.len() && instrs.len() < self.config.max_instrs {
             let instr = decoder.decode(&guest_code[offset..], start_rip + offset as u64)?;
+            let is_term = is_block_terminator(&instr);
             
-            // Build IR for instruction
-            builder.translate(&instr)?;
-            
-            offset += instr.len;
-            instr_count += 1;
+            offset += instr.len as usize;
+            instrs.push(instr);
             
             // Stop at control flow changes
-            if is_block_terminator(&instr) {
+            if is_term {
                 break;
             }
         }
         
-        let mut ir = builder.finish();
+        // Build IR using IrBuilder
+        let builder = IrBuilder::new(start_rip);
+        let mut ir = builder.build(&instrs);
         
         // Apply S1 optimizations
         if self.config.const_fold {
@@ -136,74 +134,93 @@ impl S1Compiler {
     }
     
     fn try_fold_binary(&self, instr: &IrInstr, _prior: &[IrInstr]) -> Option<IrInstr> {
+        // SSA style: dst is in instr.dst, ops only have operands
         match &instr.op {
-            IrOp::Add(dst, a, b) => {
+            IrOp::Add(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va.wrapping_add(vb)),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const(va.wrapping_add(vb) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
-            IrOp::Sub(dst, a, b) => {
+            IrOp::Sub(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va.wrapping_sub(vb)),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const(va.wrapping_sub(vb) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
-            IrOp::And(dst, a, b) => {
+            IrOp::And(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va & vb),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const((va & vb) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
                 // x & 0 = 0
                 if get_const_val(*b) == Some(0) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, 0),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const(0),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
-            IrOp::Or(dst, a, b) => {
+            IrOp::Or(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va | vb),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const((va | vb) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
-            IrOp::Xor(dst, a, b) => {
+            IrOp::Xor(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va ^ vb),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const((va ^ vb) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
                 // x ^ x = 0
                 if a == b {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, 0),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const(0),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
-            IrOp::Shl(dst, a, b) => {
+            IrOp::Shl(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va << (vb & 63)),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const((va << (vb & 63)) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
-            IrOp::Shr(dst, a, b) => {
+            IrOp::Shr(a, b) => {
                 if let (Some(va), Some(vb)) = (get_const_val(*a), get_const_val(*b)) {
                     return Some(IrInstr {
-                        op: IrOp::LoadConst(*dst, va >> (vb & 63)),
-                        rip: instr.rip,
+                        dst: instr.dst,
+                        op: IrOp::Const((va >> (vb & 63)) as i64),
+                        guest_rip: instr.guest_rip,
+                        flags: instr.flags,
                     });
                 }
             }
@@ -217,17 +234,8 @@ impl S1Compiler {
         // Build use set from all blocks
         let mut used = std::collections::HashSet::new();
         
-        // All exit values are used
+        // Collect all used VRegs from operands
         for bb in &ir.blocks {
-            match &bb.exit {
-                ExitReason::Jump(target) => { used.insert(*target); }
-                ExitReason::Branch { cond, .. } => { used.insert(*cond); }
-                ExitReason::IndirectJump(target) => { used.insert(*target); }
-                ExitReason::Return(val) => { if let Some(v) = val { used.insert(*v); } }
-                _ => {}
-            }
-            
-            // Mark operands of used instructions
             for instr in &bb.instrs {
                 for op in get_operands(&instr.op) {
                     used.insert(op);
@@ -238,12 +246,13 @@ impl S1Compiler {
         // Remove instructions whose results aren't used (and have no side effects)
         for bb in &mut ir.blocks {
             bb.instrs.retain(|instr| {
-                if let Some(dst) = get_def(&instr.op) {
+                // SSA style: dst is in instr.dst
+                if instr.dst.is_valid() && op_produces_value(&instr.op) {
                     // Keep if result is used OR has side effects
-                    used.contains(&dst) || has_side_effect(&instr.op)
+                    used.contains(&instr.dst) || has_side_effect(&instr.op)
                 } else {
-                    // No def - keep if has side effects
-                    has_side_effect(&instr.op)
+                    // No def or side-effectful - keep if has side effects or is terminator
+                    has_side_effect(&instr.op) || instr.flags.contains(IrFlags::TERMINATOR)
                 }
             });
         }
@@ -254,40 +263,52 @@ impl S1Compiler {
         for bb in &mut ir.blocks {
             let mut i = 0;
             while i < bb.instrs.len() {
-                // Pattern: add x, 0 -> copy
-                if let IrOp::Add(dst, a, b) = &bb.instrs[i].op {
+                let dst = bb.instrs[i].dst;
+                let guest_rip = bb.instrs[i].guest_rip;
+                let flags = bb.instrs[i].flags;
+                
+                // Pattern: add x, 0 -> const from a (copy not needed in SSA)
+                if let IrOp::Add(a, b) = &bb.instrs[i].op {
                     if get_const_val(*b) == Some(0) {
-                        bb.instrs[i].op = IrOp::Copy(*dst, *a);
+                        // In SSA, we can't just copy - need to redirect uses
+                        // For now, simplify by loading the value
+                        if let Some(val) = get_const_val(*a) {
+                            bb.instrs[i] = IrInstr { dst, op: IrOp::Const(val as i64), guest_rip, flags };
+                        }
                     }
                 }
                 
-                // Pattern: mul x, 1 -> copy
-                if let IrOp::Mul(dst, a, b) = &bb.instrs[i].op {
+                // Pattern: mul x, 1 -> keep original value
+                if let IrOp::Mul(a, b) = &bb.instrs[i].op {
                     if get_const_val(*b) == Some(1) {
-                        bb.instrs[i].op = IrOp::Copy(*dst, *a);
+                        if let Some(val) = get_const_val(*a) {
+                            bb.instrs[i] = IrInstr { dst, op: IrOp::Const(val as i64), guest_rip, flags };
+                        }
                     }
                 }
                 
                 // Pattern: mul x, 0 -> 0
-                if let IrOp::Mul(dst, _, b) = &bb.instrs[i].op {
+                if let IrOp::Mul(_, b) = &bb.instrs[i].op {
                     if get_const_val(*b) == Some(0) {
-                        bb.instrs[i].op = IrOp::LoadConst(*dst, 0);
+                        bb.instrs[i] = IrInstr { dst, op: IrOp::Const(0), guest_rip, flags };
                     }
                 }
                 
-                // Pattern: shl x, 0 -> copy
-                if let IrOp::Shl(dst, a, b) = &bb.instrs[i].op {
+                // Pattern: shl x, 0 -> keep original value
+                if let IrOp::Shl(a, b) = &bb.instrs[i].op {
                     if get_const_val(*b) == Some(0) {
-                        bb.instrs[i].op = IrOp::Copy(*dst, *a);
+                        if let Some(val) = get_const_val(*a) {
+                            bb.instrs[i] = IrInstr { dst, op: IrOp::Const(val as i64), guest_rip, flags };
+                        }
                     }
                 }
                 
-                // Pattern: consecutive loads to same vreg
+                // Pattern: consecutive consts to same vreg (keep last)
                 if i + 1 < bb.instrs.len() {
-                    if let (IrOp::LoadConst(d1, _), IrOp::LoadConst(d2, _)) = 
+                    if let (IrOp::Const(_), IrOp::Const(_)) = 
                         (&bb.instrs[i].op, &bb.instrs[i + 1].op) 
                     {
-                        if d1 == d2 {
+                        if bb.instrs[i].dst == bb.instrs[i + 1].dst {
                             bb.instrs.remove(i);
                             continue;
                         }
@@ -304,40 +325,36 @@ impl S1Compiler {
         let mut code = Vec::new();
         
         for bb in &ir.blocks {
-            // Label (for jumps)
-            // In real impl, would track label offsets
-            
             for instr in &bb.instrs {
                 self.emit_instr(&mut code, instr)?;
             }
-            
-            // Emit exit
-            self.emit_exit(&mut code, &bb.exit)?;
         }
         
         Ok(code)
     }
     
     fn emit_instr(&self, code: &mut Vec<u8>, instr: &IrInstr) -> JitResult<()> {
+        let dst = instr.dst;
+        
         match &instr.op {
-            IrOp::LoadConst(dst, val) => {
+            IrOp::Const(val) => {
                 // mov r64, imm64
-                // REX.W + B8+rd io
-                let reg = vreg_to_host(*dst);
+                let reg = vreg_to_host(dst);
                 code.push(0x48 | ((reg >> 3) << 2)); // REX.W + REX.B if needed
                 code.push(0xB8 + (reg & 7));
-                code.extend_from_slice(&val.to_le_bytes());
+                code.extend_from_slice(&(*val as u64).to_le_bytes());
             }
             
-            IrOp::Copy(dst, src) => {
-                // mov r64, r64
-                let dreg = vreg_to_host(*dst);
-                let sreg = vreg_to_host(*src);
-                emit_mov_reg_reg(code, dreg, sreg);
+            IrOp::LoadGpr(idx) => {
+                // Load from guest state
+                let reg = vreg_to_host(dst);
+                let _ = (reg, idx); // Placeholder
+                code.push(0x90); // NOP
             }
             
-            IrOp::Add(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::Add(a, b) => {
+                // SSA: dst = a + b
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 let breg = vreg_to_host(*b);
                 
@@ -349,8 +366,8 @@ impl S1Compiler {
                 emit_alu_reg_reg(code, 0x01, dreg, breg);
             }
             
-            IrOp::Sub(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::Sub(a, b) => {
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 let breg = vreg_to_host(*b);
                 
@@ -360,8 +377,8 @@ impl S1Compiler {
                 emit_alu_reg_reg(code, 0x29, dreg, breg);
             }
             
-            IrOp::And(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::And(a, b) => {
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 let breg = vreg_to_host(*b);
                 
@@ -371,8 +388,8 @@ impl S1Compiler {
                 emit_alu_reg_reg(code, 0x21, dreg, breg);
             }
             
-            IrOp::Or(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::Or(a, b) => {
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 let breg = vreg_to_host(*b);
                 
@@ -382,8 +399,8 @@ impl S1Compiler {
                 emit_alu_reg_reg(code, 0x09, dreg, breg);
             }
             
-            IrOp::Xor(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::Xor(a, b) => {
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 let breg = vreg_to_host(*b);
                 
@@ -393,8 +410,22 @@ impl S1Compiler {
                 emit_alu_reg_reg(code, 0x31, dreg, breg);
             }
             
-            IrOp::Shl(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::Mul(a, b) => {
+                let dreg = vreg_to_host(dst);
+                let areg = vreg_to_host(*a);
+                let breg = vreg_to_host(*b);
+                
+                // imul r64, r64
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_rex_w(code, dreg, breg);
+                code.extend_from_slice(&[0x0F, 0xAF]);
+                code.push(0xC0 | ((dreg & 7) << 3) | (breg & 7));
+            }
+            
+            IrOp::Shl(a, b) => {
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 
                 if dreg != areg {
@@ -417,8 +448,8 @@ impl S1Compiler {
                 }
             }
             
-            IrOp::Shr(dst, a, b) => {
-                let dreg = vreg_to_host(*dst);
+            IrOp::Shr(a, b) => {
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*a);
                 
                 if dreg != areg {
@@ -439,20 +470,42 @@ impl S1Compiler {
                 }
             }
             
-            IrOp::Load8(dst, addr) | IrOp::Load16(dst, addr) | 
-            IrOp::Load32(dst, addr) | IrOp::Load64(dst, addr) => {
-                // Would call memory access thunk
-                let dreg = vreg_to_host(*dst);
+            IrOp::Sar(a, b) => {
+                let dreg = vreg_to_host(dst);
+                let areg = vreg_to_host(*a);
+                
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                
+                if let Some(shift) = get_const_val(*b) {
+                    emit_rex_w(code, dreg, 0);
+                    code.push(0xC1);
+                    code.push(0xF8 | (dreg & 7)); // SAR /7
+                    code.push(shift as u8 & 63);
+                } else {
+                    let breg = vreg_to_host(*b);
+                    emit_mov_reg_reg(code, 1, breg);
+                    emit_rex_w(code, dreg, 0);
+                    code.push(0xD3);
+                    code.push(0xF8 | (dreg & 7));
+                }
+            }
+            
+            IrOp::Load8(addr) | IrOp::Load16(addr) | 
+            IrOp::Load32(addr) | IrOp::Load64(addr) => {
+                // SSA: dst = mem[addr]
+                let dreg = vreg_to_host(dst);
                 let areg = vreg_to_host(*addr);
                 
                 match &instr.op {
-                    IrOp::Load8(_, _) => {
+                    IrOp::Load8(_) => {
                         // movzx r64, byte [addr]
                         emit_rex_w(code, dreg, areg);
                         code.extend_from_slice(&[0x0F, 0xB6]);
                         code.push((dreg & 7) << 3 | (areg & 7));
                     }
-                    IrOp::Load64(_, _) => {
+                    IrOp::Load64(_) => {
                         // mov r64, [addr]
                         emit_rex_w(code, dreg, areg);
                         code.push(0x8B);
@@ -478,20 +531,41 @@ impl S1Compiler {
                 code.push((vreg & 7) << 3 | (areg & 7));
             }
             
-            IrOp::Compare(dst, a, b) => {
+            IrOp::Cmp(a, b) => {
+                // SSA: dst = flags(a cmp b)
                 let areg = vreg_to_host(*a);
                 let breg = vreg_to_host(*b);
-                let dreg = vreg_to_host(*dst);
+                let dreg = vreg_to_host(dst);
                 
                 // cmp a, b
                 emit_alu_reg_reg(code, 0x39, areg, breg);
                 
-                // Flags result - would need lahf or setcc sequence
-                // For now, just zero the dest
-                emit_mov_reg_reg(code, dreg, dreg); // xor dreg, dreg
+                // lahf to capture flags
+                code.push(0x9F);
+                // mov dst, rax (flags in AH)
+                emit_mov_reg_reg(code, dreg, 0);
+            }
+            
+            IrOp::Test(a, b) => {
+                let areg = vreg_to_host(*a);
+                let breg = vreg_to_host(*b);
+                let dreg = vreg_to_host(dst);
+                
+                // test a, b
+                emit_alu_reg_reg(code, 0x85, areg, breg);
+                
+                code.push(0x9F); // lahf
+                emit_mov_reg_reg(code, dreg, 0);
             }
             
             IrOp::Call(target) => {
+                // Direct call to address
+                // call rel32 - would need address resolution
+                let _ = target;
+                code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00]); // Placeholder
+            }
+            
+            IrOp::CallIndirect(target) => {
                 // call helper function
                 let treg = vreg_to_host(*target);
                 emit_rex_w(code, 0, treg);
@@ -499,55 +573,78 @@ impl S1Compiler {
                 code.push(0xD0 | (treg & 7));
             }
             
+            IrOp::Jump(block_id) => {
+                // jmp rel32 - would need label resolution
+                let _ = block_id;
+                code.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]); // Placeholder
+            }
+            
+            IrOp::Branch(cond, true_blk, false_blk) => {
+                // Test condition and branch
+                let creg = vreg_to_host(*cond);
+                let _ = (true_blk, false_blk);
+                
+                // test cond, cond
+                emit_alu_reg_reg(code, 0x85, creg, creg);
+                
+                // jnz to true_blk (placeholder - would need label resolution)
+                code.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]); // jnz rel32
+                // jmp to false_blk
+                code.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]); // jmp rel32
+            }
+            
+            IrOp::Ret => {
+                code.push(0xC3);
+            }
+            
+            IrOp::Exit(reason) => {
+                // Exit VM - return to runtime with exit code
+                // mov eax, exit_code
+                let exit_code = match reason {
+                    ExitReason::Normal => 0u32,
+                    ExitReason::Halt => 1,
+                    ExitReason::Interrupt(n) => 0x100 | (*n as u32),
+                    ExitReason::Exception(n, _) => 0x200 | (*n as u32),
+                    ExitReason::IoRead(_, _) => 0x300,
+                    ExitReason::IoWrite(_, _) => 0x400,
+                    ExitReason::Mmio(_, _, _) => 0x500,
+                    ExitReason::Hypercall => 0x600,
+                    ExitReason::Reset => 0x700,
+                };
+                code.push(0xB8);
+                code.extend_from_slice(&exit_code.to_le_bytes());
+                code.push(0xC3);
+            }
+            
             IrOp::Nop => {
                 code.push(0x90);
+            }
+            
+            IrOp::Neg(a) => {
+                let dreg = vreg_to_host(dst);
+                let areg = vreg_to_host(*a);
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_rex_w(code, 0, dreg);
+                code.push(0xF7);
+                code.push(0xD8 | (dreg & 7)); // neg r64
+            }
+            
+            IrOp::Not(a) => {
+                let dreg = vreg_to_host(dst);
+                let areg = vreg_to_host(*a);
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_rex_w(code, 0, dreg);
+                code.push(0xF7);
+                code.push(0xD0 | (dreg & 7)); // not r64
             }
             
             _ => {
                 // Unhandled - emit nop
                 code.push(0x90);
-            }
-        }
-        
-        Ok(())
-    }
-    
-    fn emit_exit(&self, code: &mut Vec<u8>, exit: &ExitReason) -> JitResult<()> {
-        match exit {
-            ExitReason::Jump(target) => {
-                let treg = vreg_to_host(*target);
-                // jmp *target
-                emit_rex_w(code, 0, treg);
-                code.push(0xFF);
-                code.push(0xE0 | (treg & 7));
-            }
-            ExitReason::Branch { cond, target, fallthrough } => {
-                // Test condition and branch
-                let creg = vreg_to_host(*cond);
-                let treg = vreg_to_host(*target);
-                let freg = vreg_to_host(*fallthrough);
-                
-                // test cond, cond
-                emit_alu_reg_reg(code, 0x85, creg, creg);
-                
-                // jnz to target path (placeholder - would need label resolution)
-                code.extend_from_slice(&[0x75, 0x00]); // jnz +0
-                
-                // fallthrough path
-                emit_rex_w(code, 0, freg);
-                code.push(0xFF);
-                code.push(0xE0 | (freg & 7));
-            }
-            ExitReason::Return(_) => {
-                // ret
-                code.push(0xC3);
-            }
-            ExitReason::Halt => {
-                // Return to runtime with halt code
-                code.push(0xC3);
-            }
-            _ => {
-                code.push(0xC3);
             }
         }
         
@@ -560,17 +657,18 @@ impl S1Compiler {
         for bb in &ir.blocks {
             for instr in &bb.instrs {
                 cycles += match &instr.op {
-                    IrOp::LoadConst(_, _) | IrOp::Copy(_, _) => 1,
-                    IrOp::Add(_, _, _) | IrOp::Sub(_, _, _) => 1,
-                    IrOp::And(_, _, _) | IrOp::Or(_, _, _) | IrOp::Xor(_, _, _) => 1,
-                    IrOp::Mul(_, _, _) => 3,
-                    IrOp::Div(_, _, _) | IrOp::Rem(_, _, _) => 20,
-                    IrOp::Shl(_, _, _) | IrOp::Shr(_, _, _) | IrOp::Sar(_, _, _) => 1,
-                    IrOp::Load8(_, _) | IrOp::Load16(_, _) | 
-                    IrOp::Load32(_, _) | IrOp::Load64(_, _) => 4,
+                    IrOp::Const(_) => 1,
+                    IrOp::Add(_, _) | IrOp::Sub(_, _) => 1,
+                    IrOp::And(_, _) | IrOp::Or(_, _) | IrOp::Xor(_, _) => 1,
+                    IrOp::Mul(_, _) | IrOp::IMul(_, _) => 3,
+                    IrOp::Div(_, _) | IrOp::IDiv(_, _) => 20,
+                    IrOp::Shl(_, _) | IrOp::Shr(_, _) | IrOp::Sar(_, _) => 1,
+                    IrOp::Load8(_) | IrOp::Load16(_) | 
+                    IrOp::Load32(_) | IrOp::Load64(_) => 4,
                     IrOp::Store8(_, _) | IrOp::Store16(_, _) |
                     IrOp::Store32(_, _) | IrOp::Store64(_, _) => 4,
-                    IrOp::Call(_) => 5,
+                    IrOp::Call(_) | IrOp::CallIndirect(_) => 5,
+                    IrOp::Exit(_) => 10,
                     _ => 1,
                 };
             }
@@ -609,37 +707,71 @@ fn get_const_val(_vreg: VReg) -> Option<u64> {
     None
 }
 
-/// Get operands of an IR operation
+/// Get operands of an IR operation (SSA style - dst is in IrInstr.dst)
 fn get_operands(op: &IrOp) -> Vec<VReg> {
     match op {
-        IrOp::Copy(_, src) => vec![*src],
-        IrOp::Add(_, a, b) | IrOp::Sub(_, a, b) | IrOp::And(_, a, b) |
-        IrOp::Or(_, a, b) | IrOp::Xor(_, a, b) | IrOp::Mul(_, a, b) |
-        IrOp::Div(_, a, b) | IrOp::Rem(_, a, b) | IrOp::Shl(_, a, b) |
-        IrOp::Shr(_, a, b) | IrOp::Sar(_, a, b) => vec![*a, *b],
-        IrOp::Neg(_, a) | IrOp::Not(_, a) => vec![*a],
-        IrOp::Load8(_, addr) | IrOp::Load16(_, addr) |
-        IrOp::Load32(_, addr) | IrOp::Load64(_, addr) => vec![*addr],
+        // Binary ops
+        IrOp::Add(a, b) | IrOp::Sub(a, b) | IrOp::And(a, b) |
+        IrOp::Or(a, b) | IrOp::Xor(a, b) | IrOp::Mul(a, b) | IrOp::IMul(a, b) |
+        IrOp::Div(a, b) | IrOp::IDiv(a, b) | IrOp::Shl(a, b) |
+        IrOp::Shr(a, b) | IrOp::Sar(a, b) | IrOp::Rol(a, b) | IrOp::Ror(a, b) |
+        IrOp::Cmp(a, b) | IrOp::Test(a, b) => vec![*a, *b],
+        // Unary ops
+        IrOp::Neg(a) | IrOp::Not(a) => vec![*a],
+        // Memory loads (addr only)
+        IrOp::Load8(addr) | IrOp::Load16(addr) |
+        IrOp::Load32(addr) | IrOp::Load64(addr) => vec![*addr],
+        // Memory stores
         IrOp::Store8(addr, val) | IrOp::Store16(addr, val) |
         IrOp::Store32(addr, val) | IrOp::Store64(addr, val) => vec![*addr, *val],
-        IrOp::Compare(_, a, b) => vec![*a, *b],
+        // Extensions
+        IrOp::Sext8(v) | IrOp::Sext16(v) | IrOp::Sext32(v) |
+        IrOp::Zext8(v) | IrOp::Zext16(v) | IrOp::Zext32(v) |
+        IrOp::Trunc8(v) | IrOp::Trunc16(v) | IrOp::Trunc32(v) => vec![*v],
+        // Flag extraction
+        IrOp::GetCF(v) | IrOp::GetZF(v) | IrOp::GetSF(v) |
+        IrOp::GetOF(v) | IrOp::GetPF(v) => vec![*v],
+        // Select
+        IrOp::Select(c, t, f) => vec![*c, *t, *f],
+        // Guest register ops
+        IrOp::StoreGpr(_, v) | IrOp::StoreFlags(v) | IrOp::StoreRip(v) => vec![*v],
+        // I/O
+        IrOp::In8(p) | IrOp::In16(p) | IrOp::In32(p) => vec![*p],
+        IrOp::Out8(p, v) | IrOp::Out16(p, v) | IrOp::Out32(p, v) => vec![*p, *v],
+        // Control flow
+        IrOp::Branch(c, _, _) => vec![*c],
+        IrOp::CallIndirect(t) => vec![*t],
+        // Phi
+        IrOp::Phi(sources) => sources.iter().map(|(_, v)| *v).collect(),
+        // No operands
         _ => Vec::new(),
     }
 }
 
-/// Get defined register
-fn get_def(op: &IrOp) -> Option<VReg> {
+/// Get defined register (SSA style - dst is in IrInstr.dst, not in IrOp)
+/// This function is for checking if an op produces a value
+fn op_produces_value(op: &IrOp) -> bool {
     match op {
-        IrOp::LoadConst(d, _) | IrOp::Copy(d, _) |
-        IrOp::Add(d, _, _) | IrOp::Sub(d, _, _) | IrOp::And(d, _, _) |
-        IrOp::Or(d, _, _) | IrOp::Xor(d, _, _) | IrOp::Mul(d, _, _) |
-        IrOp::Div(d, _, _) | IrOp::Rem(d, _, _) | IrOp::Shl(d, _, _) |
-        IrOp::Shr(d, _, _) | IrOp::Sar(d, _, _) | IrOp::Neg(d, _) |
-        IrOp::Not(d, _) | IrOp::Load8(d, _) | IrOp::Load16(d, _) |
-        IrOp::Load32(d, _) | IrOp::Load64(d, _) | IrOp::Compare(d, _, _) |
-        IrOp::ZeroExtend(d, _, _) | IrOp::SignExtend(d, _, _) |
-        IrOp::ReadGpr(d, _) | IrOp::ReadFlags(d) => Some(*d),
-        _ => None,
+        // These produce a value (dst is in IrInstr.dst)
+        IrOp::Const(_) | IrOp::ConstF64(_) |
+        IrOp::LoadGpr(_) | IrOp::LoadFlags | IrOp::LoadRip |
+        IrOp::Load8(_) | IrOp::Load16(_) | IrOp::Load32(_) | IrOp::Load64(_) |
+        IrOp::Add(_, _) | IrOp::Sub(_, _) | IrOp::Mul(_, _) | IrOp::IMul(_, _) |
+        IrOp::Div(_, _) | IrOp::IDiv(_, _) | IrOp::Neg(_) |
+        IrOp::And(_, _) | IrOp::Or(_, _) | IrOp::Xor(_, _) | IrOp::Not(_) |
+        IrOp::Shl(_, _) | IrOp::Shr(_, _) | IrOp::Sar(_, _) |
+        IrOp::Rol(_, _) | IrOp::Ror(_, _) |
+        IrOp::Cmp(_, _) | IrOp::Test(_, _) |
+        IrOp::GetCF(_) | IrOp::GetZF(_) | IrOp::GetSF(_) | IrOp::GetOF(_) | IrOp::GetPF(_) |
+        IrOp::Select(_, _, _) |
+        IrOp::Sext8(_) | IrOp::Sext16(_) | IrOp::Sext32(_) |
+        IrOp::Zext8(_) | IrOp::Zext16(_) | IrOp::Zext32(_) |
+        IrOp::Trunc8(_) | IrOp::Trunc16(_) | IrOp::Trunc32(_) |
+        IrOp::In8(_) | IrOp::In16(_) | IrOp::In32(_) |
+        IrOp::Rdtsc | IrOp::Cpuid |
+        IrOp::Phi(_) => true,
+        // These don't produce a value
+        _ => false,
     }
 }
 
@@ -648,9 +780,12 @@ fn has_side_effect(op: &IrOp) -> bool {
     matches!(op,
         IrOp::Store8(_, _) | IrOp::Store16(_, _) |
         IrOp::Store32(_, _) | IrOp::Store64(_, _) |
-        IrOp::WriteGpr(_, _) | IrOp::WriteFlags(_) |
-        IrOp::Call(_) | IrOp::IoIn(_, _) | IrOp::IoOut(_, _) |
-        IrOp::Interrupt(_) | IrOp::Fence
+        IrOp::StoreGpr(_, _) | IrOp::StoreFlags(_) | IrOp::StoreRip(_) |
+        IrOp::Call(_) | IrOp::CallIndirect(_) |
+        IrOp::Out8(_, _) | IrOp::Out16(_, _) | IrOp::Out32(_, _) |
+        IrOp::Syscall | IrOp::Hlt |
+        IrOp::Jump(_) | IrOp::Branch(_, _, _) | IrOp::Ret |
+        IrOp::Exit(_)
     )
 }
 
@@ -683,21 +818,13 @@ mod tests {
     fn test_peephole_add_zero() {
         let compiler = S1Compiler::new();
         
-        let mut ir = IrBlock {
-            entry_rip: 0x1000,
-            blocks: vec![
-                super::super::ir::IrBasicBlock {
-                    id: 0,
-                    instrs: vec![
-                        IrInstr {
-                            op: IrOp::Add(VReg(0), VReg(1), VReg(2)),
-                            rip: 0x1000,
-                        },
-                    ],
-                    exit: ExitReason::Halt,
-                },
-            ],
-        };
+        let mut ir = IrBlock::new(0x1000);
+        ir.blocks[0].instrs.push(IrInstr {
+            dst: VReg(0),
+            op: IrOp::Add(VReg(1), VReg(2)),
+            guest_rip: 0x1000,
+            flags: IrFlags::empty(),
+        });
         
         compiler.peephole(&mut ir);
         // Would check that add with const 0 became copy

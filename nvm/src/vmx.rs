@@ -1011,6 +1011,212 @@ impl Default for VmxManager {
     }
 }
 
+// ============================================================================
+// VMX Executor - Integrates JIT with VMX
+// ============================================================================
+
+use crate::jit::{JitEngine, JitConfig, ExecuteResult, JitError};
+use crate::memory::PhysicalMemory;
+
+/// VMX execution loop result
+#[derive(Debug, Clone)]
+pub enum VmxExecResult {
+    /// VM exited normally
+    VmExit(VmExitReason, u64),
+    /// VM halted (HLT instruction)
+    Halted,
+    /// External interrupt pending
+    Interrupt(u8),
+    /// VM was reset
+    Reset,
+    /// Triple fault (shutdown)
+    Shutdown,
+    /// Execution error
+    Error(String),
+}
+
+/// VMX Executor - runs guest code using JIT with VMX controls
+/// 
+/// This is the execution engine that:
+/// 1. Uses JIT to execute guest x86-64 instructions
+/// 2. Handles VM exits (I/O, CPUID, MSR, etc.)
+/// 3. Manages EPT translations
+/// 4. Supports nested virtualization
+pub struct VmxExecutor {
+    /// VMX manager for VMCS and EPT
+    vmx: Arc<VmxManager>,
+    /// JIT execution engine
+    jit: JitEngine,
+    /// Guest memory (via EPT)
+    memory: Arc<PhysicalMemory>,
+    /// Running flag
+    running: AtomicBool,
+    /// Statistics
+    stats: RwLock<VmxExecStats>,
+}
+
+/// VMX executor statistics
+#[derive(Debug, Clone, Default)]
+pub struct VmxExecStats {
+    /// Instructions executed
+    pub instructions: u64,
+    /// VM entries
+    pub vm_entries: u64,
+    /// VM exits by reason
+    pub vm_exits: HashMap<u32, u64>,
+    /// JIT compilations
+    pub jit_compilations: u64,
+    /// Total execution time (ns)
+    pub exec_time_ns: u64,
+}
+
+impl VmxExecutor {
+    /// Create new VMX executor
+    pub fn new(memory: Arc<PhysicalMemory>) -> Self {
+        let vmx = Arc::new(VmxManager::new());
+        
+        Self {
+            vmx,
+            jit: JitEngine::new(),
+            memory,
+            running: AtomicBool::new(false),
+            stats: RwLock::new(VmxExecStats::default()),
+        }
+    }
+    
+    /// Create with custom JIT config
+    pub fn with_jit_config(memory: Arc<PhysicalMemory>, jit_config: JitConfig) -> Self {
+        let vmx = Arc::new(VmxManager::new());
+        
+        Self {
+            vmx,
+            jit: JitEngine::with_config(jit_config),
+            memory,
+            running: AtomicBool::new(false),
+            stats: RwLock::new(VmxExecStats::default()),
+        }
+    }
+    
+    /// Initialize VMX and prepare for execution
+    pub fn init(&self) -> VmxResult<()> {
+        self.vmx.enable()?;
+        let vmcs_id = self.vmx.create_vmcs()?;
+        self.vmx.load_vmcs(vmcs_id)?;
+        Ok(())
+    }
+    
+    /// Run guest until VM exit
+    /// 
+    /// This is the main execution loop:
+    /// 1. VM entry (load guest state)
+    /// 2. Execute guest code via JIT
+    /// 3. Handle VM exit
+    /// 4. Repeat until halt/error
+    pub fn run(&self, cpu: &VirtualCpu) -> VmxExecResult {
+        self.running.store(true, Ordering::SeqCst);
+        
+        // VM entry
+        if let Err(e) = self.vmx.vm_entry(cpu, !cpu.is_halted()) {
+            return VmxExecResult::Error(format!("VM entry failed: {:?}", e));
+        }
+        
+        self.stats.write().unwrap().vm_entries += 1;
+        
+        // Execute guest code
+        loop {
+            if !self.running.load(Ordering::SeqCst) {
+                break VmxExecResult::Halted;
+            }
+            
+            // Check for pending interrupts
+            if cpu.has_pending_interrupt() {
+                if let Some(vector) = cpu.deliver_interrupt() {
+                    // VM exit for interrupt
+                    let _ = self.vmx.vm_exit(cpu, VmExitReason::ExternalInterrupt, vector as u64);
+                    break VmxExecResult::Interrupt(vector);
+                }
+            }
+            
+            // Execute via JIT
+            match self.jit.execute(cpu, &self.memory) {
+                Ok(result) => {
+                    match result {
+                        ExecuteResult::Continue { next_rip } => {
+                            cpu.write_rip(next_rip);
+                            continue;
+                        }
+                        ExecuteResult::Halt => {
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::Hlt, 0);
+                            break VmxExecResult::Halted;
+                        }
+                        ExecuteResult::Interrupt { vector } => {
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::ExternalInterrupt, vector as u64);
+                            break VmxExecResult::Interrupt(vector);
+                        }
+                        ExecuteResult::IoNeeded { port, is_write, size } => {
+                            let qual = (port as u64) | ((size as u64) << 16) | 
+                                       (if is_write { 0 } else { 1 << 3 });
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::IoInstruction, qual);
+                            break VmxExecResult::VmExit(VmExitReason::IoInstruction, qual);
+                        }
+                        ExecuteResult::Exception { vector, error_code } => {
+                            let qual = error_code.map(|e| e as u64).unwrap_or(0);
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::ExceptionOrNmi, 
+                                                     (vector as u64) | (qual << 32));
+                            break VmxExecResult::VmExit(VmExitReason::ExceptionOrNmi, vector as u64);
+                        }
+                        ExecuteResult::Hypercall { nr, args } => {
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::Vmcall, nr);
+                            break VmxExecResult::VmExit(VmExitReason::Vmcall, nr);
+                        }
+                        ExecuteResult::Reset => {
+                            break VmxExecResult::Reset;
+                        }
+                        ExecuteResult::Shutdown => {
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::TripleFault, 0);
+                            break VmxExecResult::Shutdown;
+                        }
+                        ExecuteResult::MmioNeeded { addr, is_write, size } => {
+                            // EPT violation
+                            let _ = self.vmx.vm_exit(cpu, VmExitReason::EptViolation, addr);
+                            break VmxExecResult::VmExit(VmExitReason::EptViolation, addr);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // JIT execution error
+                    break VmxExecResult::Error(format!("JIT error: {}", e));
+                }
+            }
+        }
+    }
+    
+    /// Stop execution
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+    
+    /// Check if running
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+    
+    /// Get VMX manager
+    pub fn vmx(&self) -> &VmxManager {
+        &self.vmx
+    }
+    
+    /// Get JIT engine
+    pub fn jit(&self) -> &JitEngine {
+        &self.jit
+    }
+    
+    /// Get statistics
+    pub fn stats(&self) -> VmxExecStats {
+        self.stats.read().unwrap().clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

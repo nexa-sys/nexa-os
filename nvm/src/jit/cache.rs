@@ -199,6 +199,38 @@ impl CodeCache {
         Ok(())
     }
     
+    /// Replace an existing block with new code
+    pub fn replace(&self, rip: u64, code: Vec<u8>) -> Result<(), CacheError> {
+        // First invalidate existing block
+        self.invalidate(rip);
+        
+        // Allocate and copy code
+        let code_len = code.len();
+        let code_box: Box<[u8]> = code.into_boxed_slice();
+        let host_ptr = Box::into_raw(code_box) as *const u8;
+        
+        // Create new compiled block
+        let block = CompiledBlock {
+            guest_rip: rip,
+            guest_size: 0, // Unknown for replaced blocks
+            host_code: host_ptr,
+            host_size: code_len as u32,
+            tier: CompileTier::S2,
+            exec_count: AtomicU64::new(0),
+            last_access: AtomicU64::new(0),
+            guest_instrs: 0,
+            guest_checksum: 0,
+            depends_on: Vec::new(),
+            invalidated: false,
+        };
+        self.insert(block)
+    }
+    
+    /// Invalidate blocks in a range (alias for invalidate_region)
+    pub fn invalidate_range(&self, start: u64, end: u64) -> usize {
+        self.invalidate_region(start, end)
+    }
+    
     /// Invalidate blocks overlapping with a memory write
     pub fn invalidate_region(&self, start: u64, end: u64) -> usize {
         let mut invalidated = Vec::new();
