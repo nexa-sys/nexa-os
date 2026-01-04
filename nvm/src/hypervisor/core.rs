@@ -17,7 +17,7 @@ use super::security::SecurityPolicy;
 // Import VM backends
 use crate::svm::SvmExecutor;
 use crate::vmx::VmxExecutor;
-use crate::memory::PhysicalMemory;
+use crate::memory::{PhysicalMemory, AddressSpace};
 use crate::devices::vga::Vga;
 use crate::devices::keyboard::Ps2Keyboard;
 
@@ -1399,14 +1399,20 @@ pub struct VmInstance {
     svm_executor: RwLock<Option<Arc<SvmExecutor>>>,
     /// JIT execution backend (software, no hardware virt required)
     jit_engine: RwLock<Option<Arc<crate::jit::JitEngine>>>,
-    /// Guest physical memory
-    memory: RwLock<Option<Arc<PhysicalMemory>>>,
+    /// Guest address space (memory bus with MMIO routing)
+    address_space: RwLock<Option<Arc<AddressSpace>>>,
     /// Which backend to use
     backend_type: VmBackendType,
     /// VGA device for console display
-    vga: RwLock<Vga>,
+    vga: Arc<RwLock<Vga>>,
     /// PS/2 keyboard controller
-    keyboard: RwLock<Ps2Keyboard>,
+    keyboard: Arc<RwLock<Ps2Keyboard>>,
+    /// Virtual CPUs
+    vcpus: RwLock<Vec<Arc<crate::cpu::VirtualCpu>>>,
+    /// Execution thread handles
+    exec_threads: RwLock<Vec<std::thread::JoinHandle<()>>>,
+    /// Stop signal for execution threads
+    stop_signal: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1450,10 +1456,13 @@ impl VmInstance {
             vmx_executor: RwLock::new(None),
             svm_executor: RwLock::new(None),
             jit_engine: RwLock::new(None),
-            memory: RwLock::new(None),
+            address_space: RwLock::new(None),
             backend_type,
-            vga: RwLock::new(Vga::new()),
-            keyboard: RwLock::new(Ps2Keyboard::new()),
+            vga: Arc::new(RwLock::new(Vga::new())),
+            keyboard: Arc::new(RwLock::new(Ps2Keyboard::new())),
+            vcpus: RwLock::new(Vec::new()),
+            exec_threads: RwLock::new(Vec::new()),
+            stop_signal: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
     
@@ -1499,21 +1508,41 @@ impl VmInstance {
         
         self.set_status(VmStatus::Starting);
         
-        // Create guest physical memory (PhysicalMemory::new takes MB)
-        let memory = Arc::new(PhysicalMemory::new(self.spec.memory_mb as usize));
+        // Reset stop signal
+        self.stop_signal.store(false, Ordering::SeqCst);
         
-        // Load firmware into guest memory
-        if let Err(e) = self.load_firmware_to_memory(&memory) {
-            self.set_status(VmStatus::Stopped);
-            return Err(e);
+        // Create guest physical memory and address space
+        let ram = Arc::new(PhysicalMemory::new(self.spec.memory_mb as usize));
+        let address_space = Arc::new(AddressSpace::new(ram));
+        
+        // Register VGA MMIO region (0xA0000-0xBFFFF)
+        let vga_mmio = Arc::new(crate::devices::vga::VgaMmioHandler::new(self.vga.clone()));
+        address_space.register_mmio(0xA0000, 0x20000, vga_mmio);
+        
+        // Load firmware into guest memory and get boot context
+        let boot_context = self.load_firmware_to_memory(address_space.ram())?;
+        
+        // Create vCPUs and initialize BSP with boot context
+        let mut vcpus = Vec::new();
+        for i in 0..self.spec.vcpus {
+            let vcpu = if i == 0 {
+                let bsp = crate::cpu::VirtualCpu::new_bsp();
+                // Initialize BSP with firmware boot context
+                self.init_cpu_from_boot_context(&bsp, &boot_context);
+                bsp
+            } else {
+                crate::cpu::VirtualCpu::new_ap(i as u32)
+            };
+            vcpus.push(Arc::new(vcpu));
         }
+        *self.vcpus.write().unwrap() = vcpus;
         
         // Initialize backend based on type
         // Note: Auto is resolved in VmInstance::new(), so it should never appear here
         let backend_result = match self.backend_type {
-            VmBackendType::Vmx => self.start_vmx_backend(&memory),
-            VmBackendType::Svm => self.start_svm_backend(&memory),
-            VmBackendType::Jit => self.start_jit_backend(&memory),
+            VmBackendType::Vmx => self.start_vmx_backend(&address_space),
+            VmBackendType::Svm => self.start_svm_backend(&address_space),
+            VmBackendType::Jit => self.start_jit_backend(&address_space),
             VmBackendType::Auto => unreachable!("Auto backend should be resolved in VmInstance::new()"),
         };
         
@@ -1522,15 +1551,242 @@ impl VmInstance {
             return Err(e);
         }
         
-        // Store memory
-        *self.memory.write().unwrap() = Some(memory);
+        // Store address space
+        *self.address_space.write().unwrap() = Some(address_space.clone());
         
         // Display BIOS/firmware boot message on VGA
         self.display_boot_message();
         
+        // Start CPU execution thread for JIT backend
+        if self.backend_type == VmBackendType::Jit {
+            self.start_jit_execution_thread(address_space);
+        }
+        
         self.set_status(VmStatus::Running);
         
         Ok(())
+    }
+    
+    /// Start the JIT execution thread that runs the vCPU
+    fn start_jit_execution_thread(&self, address_space: Arc<AddressSpace>) {
+        let jit_engine = self.jit_engine.read().unwrap().clone();
+        let vcpus = self.vcpus.read().unwrap().clone();
+        let stop_signal = self.stop_signal.clone();
+        let vga = self.vga.clone();
+        let keyboard = self.keyboard.clone();
+        
+        if let (Some(engine), Some(bsp)) = (jit_engine, vcpus.first().cloned()) {
+            let handle = std::thread::spawn(move || {
+                log::info!("[JIT] Starting CPU execution loop, BSP RIP={:#x}", bsp.read_rip());
+                
+                let mut iter_count = 0u64;
+                
+                // Main execution loop
+                while !stop_signal.load(Ordering::SeqCst) {
+                    iter_count += 1;
+                    
+                    // Log every 1000 iterations for debugging
+                    if iter_count % 10000 == 0 {
+                        log::debug!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
+                    }
+                    
+                    // Check if CPU is halted (waiting for interrupt)
+                    if bsp.is_halted() {
+                        // Process pending interrupts or sleep briefly
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    }
+                    
+                    // Execute one block/instruction
+                    match engine.execute(&bsp, &address_space) {
+                        Ok(result) => {
+                            use crate::jit::ExecuteResult;
+                            match result {
+                                ExecuteResult::Continue { next_rip } => {
+                                    // Log first few iterations
+                                    if iter_count <= 10 {
+                                        log::info!("[JIT] Continue: next_rip={:#x}", next_rip);
+                                    }
+                                }
+                                ExecuteResult::Halt => {
+                                    // CPU halted (HLT instruction)
+                                    bsp.halt();
+                                    log::debug!("[JIT] CPU halted at RIP={:#x}", bsp.read_rip());
+                                }
+                                ExecuteResult::Shutdown | ExecuteResult::Reset => {
+                                    log::info!("[JIT] VM shutdown/reset requested");
+                                    break;
+                                }
+                                ExecuteResult::IoNeeded { port, is_write, size } => {
+                                    if is_write {
+                                        // For writes, RAX contains the value
+                                        let value = bsp.state().regs.rax;
+                                        Self::handle_io_write(port, size, value, &vga, &keyboard);
+                                    } else {
+                                        // For reads, put result in RAX
+                                        let value = Self::handle_io_read(port, size, &vga, &keyboard);
+                                        bsp.set_io_result(value);
+                                    }
+                                }
+                                ExecuteResult::MmioNeeded { addr, is_write, size } => {
+                                    if is_write {
+                                        let value = bsp.state().regs.rax;
+                                        Self::handle_mmio_write(addr, size, value, &vga);
+                                    } else {
+                                        let value = Self::handle_mmio_read(addr, size, &vga);
+                                        bsp.set_io_result(value);
+                                    }
+                                }
+                                ExecuteResult::Interrupt { vector } => {
+                                    log::debug!("[JIT] Interrupt {}", vector);
+                                    // Wake CPU if halted to handle interrupt
+                                    if bsp.is_halted() {
+                                        bsp.wake();
+                                    }
+                                }
+                                ExecuteResult::Exception { vector, error_code } => {
+                                    log::warn!("[JIT] Exception #{} error_code={:?} at RIP={:#x}", 
+                                              vector, error_code, bsp.read_rip());
+                                    // Triple fault check
+                                    if vector == 8 {
+                                        log::error!("[JIT] Double fault -> triple fault, shutting down");
+                                        break;
+                                    }
+                                }
+                                ExecuteResult::Hypercall { nr, args } => {
+                                    log::debug!("[JIT] Hypercall nr={} args={:?}", nr, args);
+                                    // Return 0 for now
+                                    bsp.set_io_result(0);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[JIT] Execution error at RIP={:#x}: {:?}", bsp.read_rip(), e);
+                            // On error, sleep briefly to avoid tight loop
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            
+                            // If first 10 errors, print memory at RIP for debugging
+                            if iter_count <= 10 {
+                                let rip = bsp.read_rip();
+                                let mut bytes = [0u8; 16];
+                                for i in 0..16 {
+                                    bytes[i] = address_space.read_u8(rip + i as u64);
+                                }
+                                log::error!("[JIT] Bytes at RIP: {:02x?}", bytes);
+                            }
+                        }
+                    }
+                }
+                
+                log::info!("[JIT] CPU execution loop stopped");
+            });
+            
+            self.exec_threads.write().unwrap().push(handle);
+        }
+    }
+    
+    /// Handle port I/O read from guest
+    fn handle_io_read(port: u16, size: u8, vga: &RwLock<Vga>, keyboard: &RwLock<Ps2Keyboard>) -> u64 {
+        match port {
+            // PS/2 keyboard data port
+            0x60 => {
+                let mut kb = keyboard.write().unwrap();
+                kb.read_data() as u64
+            }
+            // PS/2 keyboard status port
+            0x64 => {
+                let kb = keyboard.read().unwrap();
+                kb.read_status() as u64
+            }
+            // VGA ports
+            0x3C0..=0x3DF => {
+                let vga = vga.read().unwrap();
+                vga.read_port(port) as u64
+            }
+            // PIT channel 0 (timer)
+            0x40 => 0,
+            // CMOS/RTC
+            0x70 | 0x71 => 0,
+            // PIC ports
+            0x20 | 0x21 | 0xA0 | 0xA1 => 0xFF,
+            _ => {
+                log::trace!("[IO] Unhandled read port={:#x} size={}", port, size);
+                0xFF
+            }
+        }
+    }
+    
+    /// Handle port I/O write from guest
+    fn handle_io_write(port: u16, size: u8, value: u64, vga: &RwLock<Vga>, keyboard: &RwLock<Ps2Keyboard>) {
+        match port {
+            // PS/2 keyboard data port
+            0x60 => {
+                let mut kb = keyboard.write().unwrap();
+                kb.write_data(value as u8);
+            }
+            // PS/2 keyboard command port
+            0x64 => {
+                let mut kb = keyboard.write().unwrap();
+                kb.write_command(value as u8);
+            }
+            // VGA ports
+            0x3C0..=0x3DF => {
+                let mut vga = vga.write().unwrap();
+                vga.write_port(port, value as u8);
+            }
+            // Serial port (COM1) - output to log
+            0x3F8 => {
+                let ch = value as u8 as char;
+                if ch.is_ascii() && !ch.is_control() || ch == '\n' || ch == '\r' {
+                    log::trace!("[COM1] {}", ch);
+                }
+            }
+            // Debug port (Bochs/QEMU)
+            0xE9 => {
+                let ch = value as u8 as char;
+                if ch.is_ascii() {
+                    print!("{}", ch);
+                }
+            }
+            // PIT, PIC, CMOS - ignore for now
+            0x40..=0x43 | 0x20 | 0x21 | 0xA0 | 0xA1 | 0x70 | 0x71 => {}
+            _ => {
+                log::trace!("[IO] Unhandled write port={:#x} size={} value={:#x}", port, size, value);
+            }
+        }
+    }
+    
+    /// Handle MMIO read from guest
+    fn handle_mmio_read(addr: u64, size: u8, vga: &RwLock<Vga>) -> u64 {
+        // VGA framebuffer (text mode: 0xB8000)
+        if (0xB8000..0xC0000).contains(&addr) {
+            let vga = vga.read().unwrap();
+            let offset = (addr - 0xB8000) as usize;
+            match size {
+                1 => vga.read_vram_byte(offset) as u64,
+                2 => vga.read_vram_word(offset) as u64,
+                _ => 0,
+            }
+        } else {
+            log::trace!("[MMIO] Unhandled read addr={:#x} size={}", addr, size);
+            0
+        }
+    }
+    
+    /// Handle MMIO write from guest
+    fn handle_mmio_write(addr: u64, size: u8, value: u64, vga: &RwLock<Vga>) {
+        // VGA framebuffer (text mode: 0xB8000)
+        if (0xB8000..0xC0000).contains(&addr) {
+            let mut vga = vga.write().unwrap();
+            let offset = (addr - 0xB8000) as usize;
+            match size {
+                1 => vga.write_vram_byte(offset, value as u8),
+                2 => vga.write_vram_word(offset, value as u16),
+                _ => {}
+            }
+        } else {
+            log::trace!("[MMIO] Unhandled write addr={:#x} size={} value={:#x}", addr, size, value);
+        }
     }
     
     /// Display boot message on VGA console
@@ -1575,10 +1831,10 @@ impl VmInstance {
     }
     
     /// Start with Intel VT-x (VMX) backend
-    fn start_vmx_backend(&self, memory: &Arc<PhysicalMemory>) -> HypervisorResult<()> {
+    fn start_vmx_backend(&self, address_space: &Arc<AddressSpace>) -> HypervisorResult<()> {
         let jit_config = Self::default_jit_config();
         
-        let executor = VmxExecutor::with_jit_config(memory.clone(), jit_config);
+        let executor = VmxExecutor::with_jit_config(address_space.clone(), jit_config);
         executor.init().map_err(|e| HypervisorError::StartFailed(format!("VMX init failed: {:?}", e)))?;
         
         *self.vmx_executor.write().unwrap() = Some(Arc::new(executor));
@@ -1586,10 +1842,10 @@ impl VmInstance {
     }
     
     /// Start with AMD-V (SVM) backend  
-    fn start_svm_backend(&self, memory: &Arc<PhysicalMemory>) -> HypervisorResult<()> {
+    fn start_svm_backend(&self, address_space: &Arc<AddressSpace>) -> HypervisorResult<()> {
         let jit_config = Self::default_jit_config();
         
-        let executor = SvmExecutor::with_jit_config(memory.clone(), jit_config);
+        let executor = SvmExecutor::with_jit_config(address_space.clone(), jit_config);
         executor.init().map_err(|e| HypervisorError::StartFailed(format!("SVM init failed: {}", e)))?;
         
         *self.svm_executor.write().unwrap() = Some(Arc::new(executor));
@@ -1597,7 +1853,7 @@ impl VmInstance {
     }
     
     /// Start with pure JIT (software) backend
-    fn start_jit_backend(&self, _memory: &Arc<PhysicalMemory>) -> HypervisorResult<()> {
+    fn start_jit_backend(&self, _address_space: &Arc<AddressSpace>) -> HypervisorResult<()> {
         let jit_config = Self::default_jit_config();
         let engine = crate::jit::JitEngine::with_config(jit_config);
         
@@ -1625,7 +1881,7 @@ impl VmInstance {
     }
     
     /// Load firmware (BIOS or UEFI) into guest physical memory
-    fn load_firmware_to_memory(&self, memory: &PhysicalMemory) -> HypervisorResult<()> {
+    fn load_firmware_to_memory(&self, memory: &PhysicalMemory) -> HypervisorResult<crate::firmware::FirmwareBootContext> {
         use crate::firmware::{FirmwareManager, FirmwareType as FwType};
         
         let fw_type = match self.spec.firmware {
@@ -1642,10 +1898,50 @@ impl VmInstance {
         let (ram_ptr, ram_size) = memory.ram_region();
         let memory_slice = unsafe { std::slice::from_raw_parts_mut(ram_ptr, ram_size) };
         
-        fw_manager.load_firmware(memory_slice)
+        let boot_context = fw_manager.load_firmware(memory_slice)
             .map_err(|e| HypervisorError::StartFailed(format!("Firmware load failed: {}", e)))?;
         
-        Ok(())
+        log::info!("[VM] Firmware loaded: entry_point={:#x}, stack={:#x}, real_mode={}", 
+                   boot_context.entry_point, boot_context.stack_pointer, boot_context.real_mode);
+        
+        Ok(boot_context)
+    }
+    
+    /// Initialize CPU registers from firmware boot context
+    fn init_cpu_from_boot_context(&self, cpu: &crate::cpu::VirtualCpu, ctx: &crate::firmware::FirmwareBootContext) {
+        use crate::cpu::{msr, gpr, SegmentRegister};
+        
+        // Set RIP to firmware entry point
+        cpu.write_rip(ctx.entry_point);
+        
+        // Set stack pointer
+        cpu.write_gpr(gpr::RSP, ctx.stack_pointer);
+        
+        // Set RFLAGS
+        cpu.write_rflags(ctx.rflags);
+        
+        // Set control registers
+        cpu.write_cr0(ctx.cr0);
+        cpu.write_cr3(ctx.cr3);
+        cpu.write_cr4(ctx.cr4);
+        
+        // Set EFER MSR if in long mode
+        if ctx.efer != 0 {
+            cpu.write_msr(msr::IA32_EFER, ctx.efer);
+        }
+        
+        // Set segment registers for real mode BIOS
+        if ctx.real_mode {
+            // In real mode, CS:IP = segment:offset
+            // CS = 0xF000, IP = 0xFFF0 means linear address 0xFFFF0
+            cpu.write_segment_base(SegmentRegister::Cs, (ctx.code_segment as u64) << 4);
+            cpu.write_segment_base(SegmentRegister::Ds, (ctx.data_segment as u64) << 4);
+            cpu.write_segment_base(SegmentRegister::Es, (ctx.data_segment as u64) << 4);
+            cpu.write_segment_base(SegmentRegister::Ss, (ctx.data_segment as u64) << 4);
+        }
+        
+        log::info!("[VM] CPU initialized: RIP={:#x}, RSP={:#x}, CR0={:#x}", 
+                   ctx.entry_point, ctx.stack_pointer, ctx.cr0);
     }
     
     pub fn stop(&self) -> HypervisorResult<()> {
@@ -1658,6 +1954,9 @@ impl VmInstance {
         }
         
         self.set_status(VmStatus::Stopping);
+        
+        // Signal execution threads to stop
+        self.stop_signal.store(true, Ordering::SeqCst);
         
         // Stop the appropriate backend
         match self.backend_type {
@@ -1672,16 +1971,23 @@ impl VmInstance {
                 }
             }
             VmBackendType::Jit => {
-                // JIT engine doesn't need explicit stop
+                // JIT uses stop_signal, wait for threads to finish
             }
             VmBackendType::Auto => unreachable!("Auto backend should be resolved in VmInstance::new()"),
         }
         
-        // Clear backends
+        // Wait for execution threads to finish (with timeout)
+        let threads = std::mem::take(&mut *self.exec_threads.write().unwrap());
+        for handle in threads {
+            let _ = handle.join();
+        }
+        
+        // Clear backends and vCPUs
         *self.vmx_executor.write().unwrap() = None;
         *self.svm_executor.write().unwrap() = None;
         *self.jit_engine.write().unwrap() = None;
-        *self.memory.write().unwrap() = None;
+        *self.address_space.write().unwrap() = None;
+        self.vcpus.write().unwrap().clear();
         
         self.set_status(VmStatus::Stopped);
         
@@ -1750,17 +2056,21 @@ impl VmInstance {
     
     pub fn reset(&self) -> HypervisorResult<()> {
         // Reset CPU state and reload firmware
-        if let Some(memory) = self.memory.read().unwrap().as_ref() {
-            self.load_firmware_to_memory(memory)?;
+        if let Some(address_space) = self.address_space.read().unwrap().as_ref() {
+            self.load_firmware_to_memory(address_space.ram())?;
         }
         Ok(())
     }
     
     /// Get VGA framebuffer data for console display
     pub fn get_vga_framebuffer(&self) -> Option<Vec<u8>> {
+        // With proper MMIO routing, guest writes to 0xB8000 go directly to VGA text_buffer.
+        // No need to manually sync from PhysicalMemory anymore.
         let mut vga = self.vga.write().unwrap();
+        
         // Render text buffer to framebuffer
         vga.render_text_to_framebuffer();
+        
         // Return a copy of the framebuffer
         Some(vga.get_framebuffer().lock().unwrap().clone())
     }

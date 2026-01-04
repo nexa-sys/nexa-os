@@ -1016,7 +1016,7 @@ impl Default for VmxManager {
 // ============================================================================
 
 use crate::jit::{JitEngine, JitConfig, ExecuteResult, JitError};
-use crate::memory::PhysicalMemory;
+use crate::memory::{PhysicalMemory, AddressSpace};
 
 /// VMX execution loop result
 #[derive(Debug, Clone)]
@@ -1047,8 +1047,8 @@ pub struct VmxExecutor {
     vmx: Arc<VmxManager>,
     /// JIT execution engine
     jit: JitEngine,
-    /// Guest memory (via EPT)
-    memory: Arc<PhysicalMemory>,
+    /// Guest address space (RAM + MMIO routing)
+    address_space: Arc<AddressSpace>,
     /// Running flag
     running: AtomicBool,
     /// Statistics
@@ -1072,26 +1072,26 @@ pub struct VmxExecStats {
 
 impl VmxExecutor {
     /// Create new VMX executor
-    pub fn new(memory: Arc<PhysicalMemory>) -> Self {
+    pub fn new(address_space: Arc<AddressSpace>) -> Self {
         let vmx = Arc::new(VmxManager::new());
         
         Self {
             vmx,
             jit: JitEngine::new(),
-            memory,
+            address_space,
             running: AtomicBool::new(false),
             stats: RwLock::new(VmxExecStats::default()),
         }
     }
     
     /// Create with custom JIT config
-    pub fn with_jit_config(memory: Arc<PhysicalMemory>, jit_config: JitConfig) -> Self {
+    pub fn with_jit_config(address_space: Arc<AddressSpace>, jit_config: JitConfig) -> Self {
         let vmx = Arc::new(VmxManager::new());
         
         Self {
             vmx,
             jit: JitEngine::with_config(jit_config),
-            memory,
+            address_space,
             running: AtomicBool::new(false),
             stats: RwLock::new(VmxExecStats::default()),
         }
@@ -1138,7 +1138,7 @@ impl VmxExecutor {
             }
             
             // Execute via JIT
-            match self.jit.execute(cpu, &self.memory) {
+            match self.jit.execute(cpu, &self.address_space) {
                 Ok(result) => {
                     match result {
                         ExecuteResult::Continue { next_rip } => {

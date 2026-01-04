@@ -534,6 +534,123 @@ impl Vga {
         }
         result
     }
+    
+    /// Read from VGA I/O port (public wrapper)
+    pub fn read_port(&self, port: u16) -> u8 {
+        match port {
+            0x3C0 => self.attr_index,
+            0x3C1 => {
+                if (self.attr_index as usize) < self.attr_regs.len() {
+                    self.attr_regs[self.attr_index as usize]
+                } else {
+                    0
+                }
+            }
+            0x3CC => self.misc_output,
+            0x3C4 => self.seq_index,
+            0x3C5 => {
+                if (self.seq_index as usize) < self.seq_regs.len() {
+                    self.seq_regs[self.seq_index as usize]
+                } else {
+                    0
+                }
+            }
+            0x3CE => self.gc_index,
+            0x3CF => {
+                if (self.gc_index as usize) < self.gc_regs.len() {
+                    self.gc_regs[self.gc_index as usize]
+                } else {
+                    0
+                }
+            }
+            0x3D4 => self.crtc_index,
+            0x3D5 => {
+                if (self.crtc_index as usize) < self.crtc_regs.len() {
+                    self.crtc_regs[self.crtc_index as usize]
+                } else {
+                    0
+                }
+            }
+            0x3DA => 0x08, // Input Status 1 (vertical retrace)
+            _ => 0xFF,
+        }
+    }
+    
+    /// Write to VGA I/O port (public wrapper)
+    pub fn write_port(&mut self, port: u16, value: u8) {
+        match port {
+            0x3C0 => {
+                if !self.attr_flip_flop {
+                    self.attr_index = value & 0x1F;
+                } else if (self.attr_index as usize) < self.attr_regs.len() {
+                    self.attr_regs[self.attr_index as usize] = value;
+                }
+                self.attr_flip_flop = !self.attr_flip_flop;
+            }
+            0x3C2 => self.misc_output = value,
+            0x3C4 => self.seq_index = value,
+            0x3C5 => {
+                if (self.seq_index as usize) < self.seq_regs.len() {
+                    self.seq_regs[self.seq_index as usize] = value;
+                }
+            }
+            0x3CE => self.gc_index = value,
+            0x3CF => {
+                if (self.gc_index as usize) < self.gc_regs.len() {
+                    self.gc_regs[self.gc_index as usize] = value;
+                }
+            }
+            0x3D4 => self.crtc_index = value,
+            0x3D5 => {
+                if (self.crtc_index as usize) < self.crtc_regs.len() {
+                    self.crtc_regs[self.crtc_index as usize] = value;
+                    // Handle cursor position updates
+                    if self.crtc_index == 0x0E {
+                        self.cursor_y = (self.cursor_y & 0x00) | (value >> 0);
+                    } else if self.crtc_index == 0x0F {
+                        self.cursor_x = value;
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.dirty = true;
+    }
+    
+    /// Read byte from VGA text buffer (VRAM at 0xB8000)
+    pub fn read_vram_byte(&self, offset: usize) -> u8 {
+        if offset < self.text_buffer.len() {
+            self.text_buffer[offset]
+        } else {
+            0
+        }
+    }
+    
+    /// Read word from VGA text buffer
+    pub fn read_vram_word(&self, offset: usize) -> u16 {
+        if offset + 1 < self.text_buffer.len() {
+            (self.text_buffer[offset] as u16) | ((self.text_buffer[offset + 1] as u16) << 8)
+        } else {
+            0
+        }
+    }
+    
+    /// Write byte to VGA text buffer
+    pub fn write_vram_byte(&mut self, offset: usize, value: u8) {
+        if offset < self.text_buffer.len() {
+            self.text_buffer[offset] = value;
+            self.dirty = true;
+        }
+    }
+    
+    /// Write word to VGA text buffer
+    pub fn write_vram_word(&mut self, offset: usize, value: u16) {
+        if offset + 1 < self.text_buffer.len() {
+            self.text_buffer[offset] = (value & 0xFF) as u8;
+            self.text_buffer[offset + 1] = ((value >> 8) & 0xFF) as u8;
+            self.dirty = true;
+        }
+    }
 }
 
 impl Default for Vga {
@@ -775,6 +892,50 @@ impl Device for Vga {
                 }
             }
             self.dirty = true;
+        }
+    }
+}
+
+/// VGA MMIO handler wrapper for AddressSpace integration
+/// 
+/// This wraps a VGA in RwLock to implement MmioHandler trait
+pub struct VgaMmioHandler {
+    vga: Arc<std::sync::RwLock<Vga>>,
+}
+
+impl VgaMmioHandler {
+    pub fn new(vga: Arc<std::sync::RwLock<Vga>>) -> Self {
+        Self { vga }
+    }
+}
+
+impl crate::memory::MmioHandler for VgaMmioHandler {
+    fn read(&self, offset: usize, size: u8) -> u64 {
+        let mut vga = self.vga.write().unwrap();
+        // offset is relative to VGA_MMIO_BASE (0xA0000)
+        // Text buffer is at offset 0x18000 (0xB8000 - 0xA0000)
+        if offset >= 0x18000 && offset < 0x18000 + TEXT_BUFFER_SIZE {
+            let text_offset = offset - 0x18000;
+            match size {
+                1 => vga.read_vram_byte(text_offset) as u64,
+                2 => vga.read_vram_word(text_offset) as u64,
+                _ => vga.read_vram_byte(text_offset) as u64,
+            }
+        } else {
+            0
+        }
+    }
+    
+    fn write(&self, offset: usize, size: u8, value: u64) {
+        let mut vga = self.vga.write().unwrap();
+        // Text buffer is at offset 0x18000 (0xB8000 - 0xA0000)
+        if offset >= 0x18000 && offset < 0x18000 + TEXT_BUFFER_SIZE {
+            let text_offset = offset - 0x18000;
+            match size {
+                1 => vga.write_vram_byte(text_offset, value as u8),
+                2 => vga.write_vram_word(text_offset, value as u16),
+                _ => vga.write_vram_byte(text_offset, value as u8),
+            }
         }
     }
 }

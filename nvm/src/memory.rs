@@ -518,6 +518,159 @@ impl Drop for MockPageAllocator {
     }
 }
 
+// =============================================================================
+// AddressSpace - Memory bus with MMIO routing
+// =============================================================================
+
+/// MMIO handler trait for devices that respond to memory-mapped I/O
+pub trait MmioHandler: Send + Sync {
+    fn read(&self, offset: usize, size: u8) -> u64;
+    fn write(&self, offset: usize, size: u8, value: u64);
+}
+
+/// MMIO region registration
+struct MmioRegion {
+    start: PhysAddr,
+    size: usize,
+    handler: Arc<dyn MmioHandler>,
+}
+
+/// Address space that routes memory accesses to RAM or MMIO devices
+/// 
+/// This is the memory bus - it receives all memory accesses and routes them
+/// to either physical RAM or the appropriate MMIO device based on address.
+pub struct AddressSpace {
+    /// Physical RAM
+    ram: Arc<PhysicalMemory>,
+    /// Registered MMIO regions (sorted by start address)
+    mmio_regions: RwLock<Vec<MmioRegion>>,
+}
+
+impl AddressSpace {
+    /// Create a new address space with the given physical memory
+    pub fn new(ram: Arc<PhysicalMemory>) -> Self {
+        Self {
+            ram,
+            mmio_regions: RwLock::new(Vec::new()),
+        }
+    }
+    
+    /// Register an MMIO region
+    pub fn register_mmio(&self, start: PhysAddr, size: usize, handler: Arc<dyn MmioHandler>) {
+        let mut regions = self.mmio_regions.write().unwrap();
+        regions.push(MmioRegion { start, size, handler });
+        // Keep sorted for binary search
+        regions.sort_by_key(|r| r.start);
+    }
+    
+    /// Find MMIO handler for address, returns (handler, offset within region)
+    fn find_mmio(&self, addr: PhysAddr) -> Option<(Arc<dyn MmioHandler>, usize)> {
+        let regions = self.mmio_regions.read().unwrap();
+        for region in regions.iter() {
+            if addr >= region.start && addr < region.start + region.size as u64 {
+                let offset = (addr - region.start) as usize;
+                return Some((region.handler.clone(), offset));
+            }
+        }
+        None
+    }
+    
+    /// Read a byte
+    #[inline]
+    pub fn read_u8(&self, addr: PhysAddr) -> u8 {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.read(offset, 1) as u8
+        } else {
+            self.ram.read_u8(addr)
+        }
+    }
+    
+    /// Write a byte
+    #[inline]
+    pub fn write_u8(&self, addr: PhysAddr, value: u8) {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.write(offset, 1, value as u64);
+        } else {
+            self.ram.write_u8(addr, value);
+        }
+    }
+    
+    /// Read 16-bit value
+    #[inline]
+    pub fn read_u16(&self, addr: PhysAddr) -> u16 {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.read(offset, 2) as u16
+        } else {
+            self.ram.read_u16(addr)
+        }
+    }
+    
+    /// Write 16-bit value
+    #[inline]
+    pub fn write_u16(&self, addr: PhysAddr, value: u16) {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.write(offset, 2, value as u64);
+        } else {
+            self.ram.write_u16(addr, value);
+        }
+    }
+    
+    /// Read 32-bit value
+    #[inline]
+    pub fn read_u32(&self, addr: PhysAddr) -> u32 {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.read(offset, 4) as u32
+        } else {
+            self.ram.read_u32(addr)
+        }
+    }
+    
+    /// Write 32-bit value
+    #[inline]
+    pub fn write_u32(&self, addr: PhysAddr, value: u32) {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.write(offset, 4, value as u64);
+        } else {
+            self.ram.write_u32(addr, value);
+        }
+    }
+    
+    /// Read 64-bit value
+    #[inline]
+    pub fn read_u64(&self, addr: PhysAddr) -> u64 {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.read(offset, 8)
+        } else {
+            self.ram.read_u64(addr)
+        }
+    }
+    
+    /// Write 64-bit value
+    #[inline]
+    pub fn write_u64(&self, addr: PhysAddr, value: u64) {
+        if let Some((handler, offset)) = self.find_mmio(addr) {
+            handler.write(offset, 8, value);
+        } else {
+            self.ram.write_u64(addr, value);
+        }
+    }
+    
+    /// Get underlying physical memory (for firmware loading, etc.)
+    pub fn ram(&self) -> &Arc<PhysicalMemory> {
+        &self.ram
+    }
+    
+    /// Get raw RAM pointer for JIT native code execution
+    /// 
+    /// # Safety
+    /// This bypasses MMIO routing - native code using this pointer
+    /// will NOT trigger MMIO handlers. Use only when you're sure
+    /// the accessed addresses are not MMIO regions.
+    pub fn ram_ptr(&self) -> *mut PhysicalMemory {
+        Arc::as_ptr(&self.ram) as *mut PhysicalMemory
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

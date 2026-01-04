@@ -440,10 +440,12 @@ impl Ps2Keyboard {
         }
     }
     
-
+    // ========================================================================
+    // Public I/O Port Interface
+    // ========================================================================
     
-    /// Read from data port (0x60)
-    fn read_data(&mut self) -> u8 {
+    /// Read from data port (0x60) - public interface
+    pub fn read_data(&mut self) -> u8 {
         if let Some(data) = self.output_buffer.pop_front() {
             // Check if buffer is now empty
             if self.output_buffer.is_empty() {
@@ -456,8 +458,13 @@ impl Ps2Keyboard {
         }
     }
     
-    /// Write to data port (0x60)
-    fn write_data(&mut self, value: u8) {
+    /// Read status register (0x64) - public interface
+    pub fn read_status(&self) -> u8 {
+        self.status
+    }
+    
+    /// Write to data port (0x60) - public interface
+    pub fn write_data(&mut self, value: u8) {
         if self.expecting_data {
             self.handle_command_data(value);
             self.expecting_data = false;
@@ -467,13 +474,8 @@ impl Ps2Keyboard {
         }
     }
     
-    /// Read status register (0x64)
-    fn read_status(&self) -> u8 {
-        self.status
-    }
-    
-    /// Write command to controller (0x64)
-    fn write_command(&mut self, cmd: u8) {
+    /// Write command to controller (0x64) - public interface
+    pub fn write_command(&mut self, cmd: u8) {
         self.last_command = Some(cmd);
         
         match cmd {

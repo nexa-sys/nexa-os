@@ -7,7 +7,7 @@ use super::{JitResult, JitError, ExecuteResult, StepResult, MemAccess};
 use super::decoder::{X86Decoder, DecodedInstr, Mnemonic, Operand, Register, RegKind, MemOp};
 use super::profile::ProfileDb;
 use crate::cpu::VirtualCpu;
-use crate::memory::PhysicalMemory;
+use crate::memory::AddressSpace;
 
 /// x86-64 interpreter
 pub struct Interpreter {
@@ -28,7 +28,7 @@ impl Interpreter {
     pub fn execute_block(
         &self,
         cpu: &VirtualCpu,
-        memory: &PhysicalMemory,
+        memory: &AddressSpace,
         start_rip: u64,
         decoder: &X86Decoder,
         profile: &ProfileDb,
@@ -75,7 +75,7 @@ impl Interpreter {
     pub fn execute_single(
         &self,
         cpu: &VirtualCpu,
-        memory: &PhysicalMemory,
+        memory: &AddressSpace,
         instr: &DecodedInstr,
     ) -> JitResult<StepResult> {
         let mut mem_accesses = Vec::new();
@@ -102,7 +102,7 @@ impl Interpreter {
     fn execute_instr(
         &self,
         cpu: &VirtualCpu,
-        memory: &PhysicalMemory,
+        memory: &AddressSpace,
         instr: &DecodedInstr,
         _profile: &ProfileDb,
     ) -> JitResult<InstrResult> {
@@ -200,7 +200,7 @@ impl Interpreter {
     fn execute_instr_traced(
         &self,
         cpu: &VirtualCpu,
-        memory: &PhysicalMemory,
+        memory: &AddressSpace,
         instr: &DecodedInstr,
         _mem_accesses: &mut Vec<MemAccess>,
     ) -> JitResult<InstrResult> {
@@ -212,20 +212,20 @@ impl Interpreter {
     // Instruction implementations
     // ========================================================================
     
-    fn exec_mov(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_mov(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         self.write_operand(cpu, memory, &instr.operands[0], value, instr)?;
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_movzx(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_movzx(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         // Zero-extend is implicit when reading smaller operand
         self.write_operand(cpu, memory, &instr.operands[0], value, instr)?;
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_movsx(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_movsx(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         let src_size = self.operand_size(&instr.operands[1]);
         let extended = match src_size {
@@ -246,7 +246,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_push(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_push(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let rsp = cpu.read_gpr(4) - 8;
         cpu.write_gpr(4, rsp);
@@ -254,7 +254,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_pop(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_pop(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let rsp = cpu.read_gpr(4);
         let value = memory.read_u64(rsp);
         cpu.write_gpr(4, rsp + 8);
@@ -262,7 +262,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_xchg(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_xchg(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let val1 = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let val2 = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         self.write_operand(cpu, memory, &instr.operands[0], val2, instr)?;
@@ -270,7 +270,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_alu(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr, op: AluOp) -> JitResult<InstrResult> {
+    fn exec_alu(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr, op: AluOp) -> JitResult<InstrResult> {
         let dst = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let src = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         let size = self.operand_size(&instr.operands[0]);
@@ -304,7 +304,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_inc_dec(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr, inc: bool) -> JitResult<InstrResult> {
+    fn exec_inc_dec(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr, inc: bool) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let size = self.operand_size(&instr.operands[0]);
         
@@ -327,7 +327,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_neg(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_neg(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let result = (!value).wrapping_add(1);
         let size = self.operand_size(&instr.operands[0]);
@@ -338,14 +338,14 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_not(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_not(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         self.write_operand(cpu, memory, &instr.operands[0], !value, instr)?;
         // NOT doesn't affect flags
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_cmp(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_cmp(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let dst = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let src = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         let size = self.operand_size(&instr.operands[0]);
@@ -356,7 +356,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_test(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_test(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let dst = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let src = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
         let size = self.operand_size(&instr.operands[0]);
@@ -367,7 +367,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_imul(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_imul(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         // Two-operand form: dst *= src
         if instr.num_operands >= 2 {
             let dst = self.read_operand(cpu, memory, &instr.operands[0], instr)? as i64;
@@ -378,7 +378,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_shift(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr, op: ShiftOp) -> JitResult<InstrResult> {
+    fn exec_shift(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr, op: ShiftOp) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
         let count = if instr.num_operands > 1 {
             (self.read_operand(cpu, memory, &instr.operands[1], instr)? & 0x3F) as u32
@@ -415,7 +415,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_jmp(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_jmp(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let target = match &instr.operands[0] {
             Operand::Rel(offset) => {
                 (instr.rip as i64 + instr.len as i64 + offset) as u64
@@ -441,7 +441,7 @@ impl Interpreter {
         Ok(InstrResult::Branch { taken, target, fallthrough })
     }
     
-    fn exec_call(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_call(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let ret_addr = instr.rip + instr.len as u64;
         
         // Push return address
@@ -460,7 +460,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(target))
     }
     
-    fn exec_ret(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, _instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_ret(&self, cpu: &VirtualCpu, memory: &AddressSpace, _instr: &DecodedInstr) -> JitResult<InstrResult> {
         let rsp = cpu.read_gpr(4);
         let ret_addr = memory.read_u64(rsp);
         cpu.write_gpr(4, rsp + 8);
@@ -510,7 +510,7 @@ impl Interpreter {
         Ok(InstrResult::Exit(ExecuteResult::IoNeeded { port, is_write: true, size }))
     }
     
-    fn exec_movs(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_movs(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let size = if instr.prefixes.op_size { 2 } else { 8 };
         let rsi = cpu.read_gpr(6);
         let rdi = cpu.read_gpr(7);
@@ -536,7 +536,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_stos(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_stos(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let size = if instr.prefixes.op_size { 2 } else { 8 };
         let rdi = cpu.read_gpr(7);
         let rax = cpu.read_gpr(0);
@@ -554,7 +554,7 @@ impl Interpreter {
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
-    fn exec_lods(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_lods(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let size = if instr.prefixes.op_size { 2 } else { 8 };
         let rsi = cpu.read_gpr(6);
         
@@ -581,7 +581,7 @@ impl Interpreter {
         Ok(InstrResult::Exit(ExecuteResult::Interrupt { vector }))
     }
     
-    fn exec_iret(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, _instr: &DecodedInstr) -> JitResult<InstrResult> {
+    fn exec_iret(&self, cpu: &VirtualCpu, memory: &AddressSpace, _instr: &DecodedInstr) -> JitResult<InstrResult> {
         // Pop RIP, CS, RFLAGS
         let rsp = cpu.read_gpr(4);
         let rip = memory.read_u64(rsp);
@@ -596,7 +596,7 @@ impl Interpreter {
     // Helpers
     // ========================================================================
     
-    fn read_operand(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, op: &Operand, instr: &DecodedInstr) -> JitResult<u64> {
+    fn read_operand(&self, cpu: &VirtualCpu, memory: &AddressSpace, op: &Operand, instr: &DecodedInstr) -> JitResult<u64> {
         match op {
             Operand::None => Ok(0),
             Operand::Reg(r) => self.read_reg(cpu, r),
@@ -607,7 +607,7 @@ impl Interpreter {
         }
     }
     
-    fn write_operand(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, op: &Operand, value: u64, instr: &DecodedInstr) -> JitResult<()> {
+    fn write_operand(&self, cpu: &VirtualCpu, memory: &AddressSpace, op: &Operand, value: u64, instr: &DecodedInstr) -> JitResult<()> {
         match op {
             Operand::Reg(r) => self.write_reg_sized(cpu, r, value),
             Operand::Mem(m) => self.write_mem(cpu, memory, m, value, instr),
@@ -645,7 +645,7 @@ impl Interpreter {
         Ok(())
     }
     
-    fn read_mem(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, m: &MemOp, instr: &DecodedInstr) -> JitResult<u64> {
+    fn read_mem(&self, cpu: &VirtualCpu, memory: &AddressSpace, m: &MemOp, instr: &DecodedInstr) -> JitResult<u64> {
         let addr = self.compute_ea(cpu, m, instr)?;
         Ok(match m.size {
             1 => memory.read_u8(addr) as u64,
@@ -655,7 +655,7 @@ impl Interpreter {
         })
     }
     
-    fn write_mem(&self, cpu: &VirtualCpu, memory: &PhysicalMemory, m: &MemOp, value: u64, instr: &DecodedInstr) -> JitResult<()> {
+    fn write_mem(&self, cpu: &VirtualCpu, memory: &AddressSpace, m: &MemOp, value: u64, instr: &DecodedInstr) -> JitResult<()> {
         let addr = self.compute_ea(cpu, m, instr)?;
         match m.size {
             1 => memory.write_u8(addr, value as u8),

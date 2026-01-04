@@ -118,6 +118,61 @@ pub struct DebugRegisters {
     pub dr7: u64, // Debug control
 }
 
+/// x86 Segment descriptor
+#[derive(Debug, Clone, Default)]
+pub struct SegmentDescriptor {
+    /// Segment base address
+    pub base: u64,
+    /// Segment limit
+    pub limit: u32,
+    /// Segment selector
+    pub selector: u16,
+    /// Segment type and attributes
+    pub attrib: u16,
+}
+
+/// x86 Segment registers
+#[derive(Debug, Clone, Default)]
+pub struct SegmentRegisters {
+    pub cs: SegmentDescriptor,
+    pub ds: SegmentDescriptor,
+    pub es: SegmentDescriptor,
+    pub fs: SegmentDescriptor,
+    pub gs: SegmentDescriptor,
+    pub ss: SegmentDescriptor,
+}
+
+/// Segment register index
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentRegister {
+    Cs = 0,
+    Ds = 1,
+    Es = 2,
+    Fs = 3,
+    Gs = 4,
+    Ss = 5,
+}
+
+/// General purpose register index (x86-64 convention)
+pub mod gpr {
+    pub const RAX: u8 = 0;
+    pub const RCX: u8 = 1;
+    pub const RDX: u8 = 2;
+    pub const RBX: u8 = 3;
+    pub const RSP: u8 = 4;
+    pub const RBP: u8 = 5;
+    pub const RSI: u8 = 6;
+    pub const RDI: u8 = 7;
+    pub const R8: u8 = 8;
+    pub const R9: u8 = 9;
+    pub const R10: u8 = 10;
+    pub const R11: u8 = 11;
+    pub const R12: u8 = 12;
+    pub const R13: u8 = 13;
+    pub const R14: u8 = 14;
+    pub const R15: u8 = 15;
+}
+
 /// RFLAGS register bits
 pub mod rflags {
     pub const CF: u64 = 1 << 0;   // Carry flag
@@ -399,6 +454,7 @@ pub struct PerformanceCounters {
 #[derive(Debug, Clone)]
 pub struct CpuState {
     pub regs: Registers,
+    pub segments: SegmentRegisters,
     pub cr: ControlRegisters,
     pub dr: DebugRegisters,
     pub msrs: HashMap<u32, u64>,
@@ -428,6 +484,7 @@ impl Default for CpuState {
         
         Self {
             regs: Registers::default(),
+            segments: SegmentRegisters::default(),
             cr: ControlRegisters::default(),
             dr: DebugRegisters::default(),
             msrs,
@@ -449,6 +506,7 @@ impl CpuState {
     pub fn snapshot(&self) -> CpuStateSnapshot {
         CpuStateSnapshot {
             regs: self.regs.clone(),
+            segments: self.segments.clone(),
             cr: self.cr.clone(),
             dr: self.dr.clone(),
             msrs: self.msrs.clone(),
@@ -463,6 +521,7 @@ impl CpuState {
     /// Restore from a snapshot
     pub fn restore(&mut self, snapshot: &CpuStateSnapshot) {
         self.regs = snapshot.regs.clone();
+        self.segments = snapshot.segments.clone();
         self.cr = snapshot.cr.clone();
         self.dr = snapshot.dr.clone();
         self.msrs = snapshot.msrs.clone();
@@ -480,6 +539,7 @@ impl CpuState {
 #[derive(Debug, Clone)]
 pub struct CpuStateSnapshot {
     pub regs: Registers,
+    pub segments: SegmentRegisters,
     pub cr: ControlRegisters,
     pub dr: DebugRegisters,
     pub msrs: HashMap<u32, u64>,
@@ -846,6 +906,49 @@ impl VirtualCpu {
         state.cr.cr8 = value;
         drop(state);
         self.record_event(CpuEvent::CrWrite { cr: 8, old_value: old, new_value: value });
+    }
+    
+    // ========================================================================
+    // Segment Register Operations
+    // ========================================================================
+    
+    /// Write segment register base address
+    pub fn write_segment_base(&self, seg: SegmentRegister, base: u64) {
+        let mut state = self.state.write().unwrap();
+        match seg {
+            SegmentRegister::Cs => state.segments.cs.base = base,
+            SegmentRegister::Ds => state.segments.ds.base = base,
+            SegmentRegister::Es => state.segments.es.base = base,
+            SegmentRegister::Fs => state.segments.fs.base = base,
+            SegmentRegister::Gs => state.segments.gs.base = base,
+            SegmentRegister::Ss => state.segments.ss.base = base,
+        }
+    }
+    
+    /// Read segment register base address
+    pub fn read_segment_base(&self, seg: SegmentRegister) -> u64 {
+        let state = self.state.read().unwrap();
+        match seg {
+            SegmentRegister::Cs => state.segments.cs.base,
+            SegmentRegister::Ds => state.segments.ds.base,
+            SegmentRegister::Es => state.segments.es.base,
+            SegmentRegister::Fs => state.segments.fs.base,
+            SegmentRegister::Gs => state.segments.gs.base,
+            SegmentRegister::Ss => state.segments.ss.base,
+        }
+    }
+    
+    /// Write segment selector
+    pub fn write_segment_selector(&self, seg: SegmentRegister, selector: u16) {
+        let mut state = self.state.write().unwrap();
+        match seg {
+            SegmentRegister::Cs => state.segments.cs.selector = selector,
+            SegmentRegister::Ds => state.segments.ds.selector = selector,
+            SegmentRegister::Es => state.segments.es.selector = selector,
+            SegmentRegister::Fs => state.segments.fs.selector = selector,
+            SegmentRegister::Gs => state.segments.gs.selector = selector,
+            SegmentRegister::Ss => state.segments.ss.selector = selector,
+        }
     }
     
     // ========================================================================
@@ -1511,6 +1614,16 @@ impl VirtualCpu {
     /// Set registers
     pub fn set_registers(&self, regs: Registers) {
         self.state.write().unwrap().regs = regs;
+    }
+    
+    /// Get a copy of the current CPU state
+    pub fn state(&self) -> CpuState {
+        self.state.read().unwrap().clone()
+    }
+    
+    /// Set I/O result (RAX) after I/O operation completes
+    pub fn set_io_result(&self, value: u64) {
+        self.state.write().unwrap().regs.rax = value;
     }
 }
 
