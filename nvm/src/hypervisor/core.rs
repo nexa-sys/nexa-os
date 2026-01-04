@@ -1195,6 +1195,7 @@ impl Hypervisor {
     
     /// Inject keyboard key event to VM (for console input)
     pub fn vm_inject_key(&self, id: VmId, key: &str, is_release: bool) -> HypervisorResult<()> {
+        log::info!("[Hypervisor] vm_inject_key: id={:?}, key='{}', is_release={}", id, key, is_release);
         let vm = self.get_vm(id)?;
         vm.inject_key(key, is_release);
         Ok(())

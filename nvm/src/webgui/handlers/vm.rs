@@ -1526,6 +1526,7 @@ async fn handle_console_socket(
                                 // Forward key events to VM PS/2 keyboard
                                 // Keys are injected to keyboard controller, which raises IRQ1
                                 // BIOS/OS handles key combinations like Ctrl+Alt+Del
+                                log::info!("[Console] Key event received: {:?}", cmd);
                                 {
                                     let executor = vm_executor();
                                     
@@ -1534,20 +1535,20 @@ async fn handle_console_socket(
                                     
                                     if let Some(keys) = cmd.get("keys").and_then(|k| k.as_array()) {
                                         // Key combination - press all then release in reverse
-                                        log::debug!("[Console] Key combo: {:?}", keys);
+                                        log::info!("[Console] Key combo: {:?} for VM {}", keys, vm_id);
                                         for key in keys {
                                             if let Some(key_str) = key.as_str() {
-                                                log::trace!("[Console] Injecting key press: {}", key_str);
+                                                log::info!("[Console] Injecting key press: {} to VM {}", key_str, vm_id);
                                                 if let Err(e) = executor.inject_key(&vm_id, key_str, false) {
-                                                    log::warn!("[Console] inject_key press failed: {}", e);
+                                                    log::error!("[Console] inject_key press failed: {}", e);
                                                 }
                                             }
                                         }
                                         for key in keys.iter().rev() {
                                             if let Some(key_str) = key.as_str() {
-                                                log::trace!("[Console] Injecting key release: {}", key_str);
+                                                log::info!("[Console] Injecting key release: {} to VM {}", key_str, vm_id);
                                                 if let Err(e) = executor.inject_key(&vm_id, key_str, true) {
-                                                    log::warn!("[Console] inject_key release failed: {}", e);
+                                                    log::error!("[Console] inject_key release failed: {}", e);
                                                 }
                                             }
                                         }
@@ -1555,13 +1556,21 @@ async fn handle_console_socket(
                                         // Prefer code over key - code is physical key location, more reliable
                                         if !code.is_empty() {
                                             let key_mapped = map_js_code_to_ps2(code);
-                                            let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                            log::info!("[Console] Key by code: code='{}' -> mapped='{}' is_release={} for VM {}", 
+                                                       code, key_mapped, is_release, vm_id);
+                                            if let Err(e) = executor.inject_key(&vm_id, &key_mapped, is_release) {
+                                                log::error!("[Console] inject_key failed: {}", e);
+                                            }
                                         }
                                     } else if let Some(key) = cmd.get("key").and_then(|k| k.as_str()) {
                                         // Fallback to key if code is not available
                                         if !key.is_empty() {
                                             let key_mapped = map_js_key_to_ps2(key, &cmd);
-                                            let _ = executor.inject_key(&vm_id, &key_mapped, is_release);
+                                            log::info!("[Console] Key by key: key='{}' -> mapped='{}' is_release={} for VM {}", 
+                                                       key, key_mapped, is_release, vm_id);
+                                            if let Err(e) = executor.inject_key(&vm_id, &key_mapped, is_release) {
+                                                log::error!("[Console] inject_key failed: {}", e);
+                                            }
                                         }
                                     }
                                 }

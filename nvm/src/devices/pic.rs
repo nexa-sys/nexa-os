@@ -51,7 +51,7 @@ impl Pic8259Chip {
         Self {
             irr: 0,
             isr: 0,
-            imr: 0xFF, // All interrupts masked
+            imr: 0xFF, // All interrupts masked (will be unmasked by init_for_bios)
             vector_offset: 0,
             icw1: 0,
             icw2: 0,
@@ -63,6 +63,26 @@ impl Pic8259Chip {
             special_mask: false,
             lowest_priority: 7,
         }
+    }
+    
+    /// Initialize PIC as if BIOS POST ran
+    /// 
+    /// Since we don't have a real CPU executing BIOS code,
+    /// we simulate the PIC initialization that BIOS would do.
+    pub fn init_for_bios(&mut self, vector_base: u8, cascade_irq: u8, is_slave: bool) {
+        // Simulate ICW1-4 initialization
+        self.icw1 = 0x11; // Edge triggered, cascade, ICW4 needed
+        self.icw2 = vector_base;
+        self.vector_offset = vector_base & 0xF8;
+        self.icw3 = if is_slave { cascade_irq } else { 1 << cascade_irq };
+        self.icw4 = 0x01; // 8086 mode
+        self.auto_eoi = false;
+        self.init_state = InitState::Normal;
+        
+        // Unmask all interrupts (BIOS typically does this)
+        self.imr = 0x00;
+        
+        log::info!("[PIC] Initialized: vector_base=0x{:02X}, imr=0x{:02X}", vector_base, self.imr);
     }
     
     pub fn reset(&mut self) {
@@ -83,7 +103,12 @@ impl Pic8259Chip {
     
     /// Check if any unmasked interrupt is pending
     pub fn has_interrupt(&self) -> bool {
-        (self.irr & !self.imr) != 0
+        let pending = self.irr & !self.imr;
+        if self.irr != 0 {
+            log::trace!("[PIC-chip] has_interrupt: irr=0x{:02X}, imr=0x{:02X}, pending=0x{:02X}", 
+                       self.irr, self.imr, pending);
+        }
+        pending != 0
     }
     
     /// Get highest priority pending interrupt
@@ -199,11 +224,13 @@ impl Pic8259Chip {
         match self.init_state {
             InitState::Normal => {
                 // OCW1 - set IMR
+                log::info!("[PIC] IMR set to 0x{:02X}", value);
                 self.imr = value;
             }
             InitState::WaitIcw2 => {
                 self.icw2 = value;
                 self.vector_offset = value & 0xF8;
+                log::info!("[PIC] Vector offset set to 0x{:02X}", self.vector_offset);
                 if self.icw1 & 0x02 != 0 {
                     // Single mode - no ICW3
                     if self.icw1 & 0x01 != 0 {
@@ -251,10 +278,16 @@ pub struct Pic8259 {
 
 impl Pic8259 {
     pub fn new() -> Self {
-        Self {
+        let mut pic = Self {
             master: Pic8259Chip::new(),
             slave: Pic8259Chip::new(),
-        }
+        };
+        // Initialize as if BIOS POST ran
+        // Master: IRQ0-7 → INT 08h-0Fh
+        // Slave: IRQ8-15 → INT 70h-77h
+        pic.master.init_for_bios(0x08, 2, false);
+        pic.slave.init_for_bios(0x70, 2, true);
+        pic
     }
     
     /// Raise an IRQ (0-15)

@@ -394,20 +394,29 @@ impl HardwareAbstractionLayer {
             let mut pic_guard = pic_dev.lock().unwrap();
             if let Some(pic) = pic_guard.as_any_mut().downcast_mut::<Pic8259>() {
                 // Check if PIC has pending interrupt
-                if pic.has_interrupt() {
+                let pic_has_int = pic.has_interrupt();
+                
+                if pic_has_int {
                     // Get current CPU
                     let cpu = self.cpu();
+                    let cpu_if = cpu.interrupts_enabled();
+                    let rflags = cpu.read_rflags();
+                    
+                    log::debug!("[HAL] PIC has interrupt, CPU IF={}, RFLAGS=0x{:08X}", cpu_if, rflags);
                     
                     // Only deliver if CPU has interrupts enabled (IF=1)
-                    if cpu.interrupts_enabled() {
+                    if cpu_if {
                         // Get the interrupt vector FIRST, then ACK
                         // This mimics the CPU's INTA cycle which returns the vector
                         if let Some(vector) = pic.get_interrupt_vector() {
+                            log::info!("[HAL] Delivering INT 0x{:02X} to CPU (IF=1)", vector);
                             // ACK the interrupt - clears IRR, sets ISR
                             pic.ack_interrupt();
                             // Inject interrupt to CPU
                             cpu.inject_interrupt(vector);
                         }
+                    } else {
+                        log::debug!("[HAL] PIC has interrupt but CPU IF=0, not delivering");
                     }
                 }
             }

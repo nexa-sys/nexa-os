@@ -238,7 +238,7 @@ impl Ps2Keyboard {
     /// Supports full PS/2 Scancode Set 2 for enterprise-grade keyboard emulation.
     /// Compatible with ESXi-style console input handling.
     pub fn inject_key(&mut self, key: &str, is_release: bool) {
-        trace!("[PS2] inject_key: key='{}', is_release={}", key, is_release);
+        log::info!("[PS2] inject_key: key='{}', is_release={}", key, is_release);
         let key_lower = key.to_lowercase();
         let key_str = key_lower.as_str();
         

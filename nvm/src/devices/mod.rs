@@ -296,6 +296,7 @@ impl DeviceManager {
                 }
                 if d.has_interrupt() {
                     if let Some(irq) = d.interrupt_vector() {
+                        log::debug!("[DeviceManager] Device {:?} has pending IRQ {}", d.id(), irq);
                         irqs.push(irq);
                     }
                 }
@@ -305,6 +306,7 @@ impl DeviceManager {
         
         // Phase 3: Forward IRQs to PIC using downcast
         if !pending_irqs.is_empty() {
+            log::info!("[DeviceManager] Forwarding IRQs {:?} to PIC", pending_irqs);
             if let Some(pic_dev) = self.get_device(DeviceId::PIC_MASTER) {
                 let mut pic_guard = pic_dev.lock().unwrap();
                 if let Some(pic) = pic_guard.as_any_mut().downcast_mut::<pic::Pic8259>() {
