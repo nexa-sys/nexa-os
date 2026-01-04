@@ -1534,14 +1534,21 @@ async fn handle_console_socket(
                                     
                                     if let Some(keys) = cmd.get("keys").and_then(|k| k.as_array()) {
                                         // Key combination - press all then release in reverse
+                                        log::debug!("[Console] Key combo: {:?}", keys);
                                         for key in keys {
                                             if let Some(key_str) = key.as_str() {
-                                                let _ = executor.inject_key(&vm_id, key_str, false);
+                                                log::trace!("[Console] Injecting key press: {}", key_str);
+                                                if let Err(e) = executor.inject_key(&vm_id, key_str, false) {
+                                                    log::warn!("[Console] inject_key press failed: {}", e);
+                                                }
                                             }
                                         }
                                         for key in keys.iter().rev() {
                                             if let Some(key_str) = key.as_str() {
-                                                let _ = executor.inject_key(&vm_id, key_str, true);
+                                                log::trace!("[Console] Injecting key release: {}", key_str);
+                                                if let Err(e) = executor.inject_key(&vm_id, key_str, true) {
+                                                    log::warn!("[Console] inject_key release failed: {}", e);
+                                                }
                                             }
                                         }
                                     } else if let Some(code) = cmd.get("code").and_then(|c| c.as_str()) {

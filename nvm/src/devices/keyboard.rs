@@ -13,6 +13,7 @@
 use std::any::Any;
 use super::{Device, DeviceId, IoAccess};
 use std::collections::VecDeque;
+use log::{trace, debug, warn};
 
 /// PS/2 keyboard controller status register bits
 #[allow(dead_code)]
@@ -214,6 +215,9 @@ impl Ps2Keyboard {
         // Translate to Set 1 if enabled (BIOS expects Set 1)
         let output_code = self.translate_scancode(scancode);
         
+        trace!("[PS2] inject_scancode: Set2=0x{:02X} -> Set1=0x{:02X}, release={}", 
+               scancode, output_code, is_release);
+        
         // Add to output buffer using Set 1 format
         if is_release {
             // Set 1 break code: scancode | 0x80
@@ -225,6 +229,8 @@ impl Ps2Keyboard {
         // Update status and raise interrupt
         self.status |= status::OUTPUT_FULL;
         self.interrupt_pending = true;
+        debug!("[PS2] Scancode in buffer, interrupt_pending=true, buffer_len={}", 
+               self.output_buffer.len());
     }
     
     /// Inject a key press event using human-readable key name
@@ -232,6 +238,7 @@ impl Ps2Keyboard {
     /// Supports full PS/2 Scancode Set 2 for enterprise-grade keyboard emulation.
     /// Compatible with ESXi-style console input handling.
     pub fn inject_key(&mut self, key: &str, is_release: bool) {
+        trace!("[PS2] inject_key: key='{}', is_release={}", key, is_release);
         let key_lower = key.to_lowercase();
         let key_str = key_lower.as_str();
         
@@ -376,10 +383,11 @@ impl Ps2Keyboard {
         
         let Some(code) = scancode else {
             // Log unknown key for debugging in enterprise environments
-            #[cfg(debug_assertions)]
-            eprintln!("[PS2] Unknown key: '{}'", key);
+            warn!("[PS2] Unknown key: '{}'", key);
             return;
         };
+        
+        trace!("[PS2] key='{}' -> scancode=0x{:02X}, extended={}", key, code, is_extended);
         
         // Send extended prefix if needed
         if is_extended {
