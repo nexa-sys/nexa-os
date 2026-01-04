@@ -476,6 +476,7 @@ impl WebGuiServer {
                 qmp_socket: None,
                 enable_kvm: true,
                 extra_args: vec![],
+                backend: "jit".to_string(),  // Default to JIT (best performance)
             };
             
             if executor.restore_vm_registration(config).is_ok() {

@@ -125,6 +125,8 @@ pub use self::core::{
     NumaSpec, NumaNode, CpuPinning,
     // Security types
     VmSecuritySpec,
+    // Backend types
+    VmBackendType,
 };
 pub use self::manager::{
     VmManager, VmManagerConfig, VmManagerBuilder, VmMetadata, VmTemplate,

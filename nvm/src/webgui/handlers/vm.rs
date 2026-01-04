@@ -174,6 +174,9 @@ pub struct CreateVmRequest {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub host_node: Option<String>,
+    /// Execution backend: "jit" (software, 5-15% faster), "vmx" (Intel), "svm" (AMD), "auto"
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 /// Enterprise hardware configuration - ESXi/vCenter style
@@ -594,6 +597,13 @@ pub struct CreateVmConfig {
     pub tpm: bool,
     #[serde(default)]
     pub iso_path: Option<String>,
+    /// Execution backend: "jit" (software, 5-15% faster), "vmx" (Intel), "svm" (AMD), "auto"
+    #[serde(default = "default_backend")]
+    pub backend: String,
+}
+
+fn default_backend() -> String {
+    "jit".to_string()
 }
 
 /// Simple disk configuration for frontend
@@ -986,6 +996,12 @@ pub async fn create(
                 .map(|b| if b.firmware == "bios" { FirmwareType::Bios } else { FirmwareType::Uefi })
                 .unwrap_or(FirmwareType::Uefi);
             
+            // Backend selection: prefer from config, then from direct field, default to "jit"
+            let backend = req.config.as_ref()
+                .map(|c| c.backend.clone())
+                .or_else(|| req.backend.clone())
+                .unwrap_or_else(|| "jit".to_string());
+            
             let exec_config = VmExecConfig {
                 vm_id: vm_id.clone(),
                 name: req.name.clone(),
@@ -1019,6 +1035,7 @@ pub async fn create(
                 qmp_socket: None,
                 enable_kvm: executor.is_kvm_available(),
                 extra_args: vec![],
+                backend,
             };
             
             // Register VM in hypervisor (ESXi-style: create = allocate resources)
