@@ -159,6 +159,7 @@ pub mod templates;  // VM template management (OVA/OVF)
 pub mod auth;       // Enhanced authentication (LDAP/OAuth2/SAML)
 pub mod licensing;  // License management and feature gating
 pub mod ha;         // High availability (Raft consensus, fencing, failover)
+pub mod firmware;   // BIOS/UEFI firmware emulation
 
 // Re-export from hypervisor module (which has its own re-exports)
 pub use hypervisor::{

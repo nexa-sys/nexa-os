@@ -148,6 +148,8 @@ pub struct VmConfig {
     pub memory_mb: usize,
     /// Number of CPUs
     pub cpus: usize,
+    /// Firmware type (BIOS or UEFI)
+    pub firmware_type: crate::firmware::FirmwareType,
     /// Enable PIC (8259)
     pub enable_pic: bool,
     /// Enable PIT (8254)
@@ -177,6 +179,7 @@ impl Default for VmConfig {
         Self {
             memory_mb: 64,
             cpus: 1,
+            firmware_type: crate::firmware::FirmwareType::Bios,
             enable_pic: true,
             enable_pit: true,
             enable_serial: true,
@@ -197,6 +200,7 @@ impl VmConfig {
         Self {
             memory_mb: 16,
             cpus: 1,
+            firmware_type: crate::firmware::FirmwareType::Bios,
             enable_pic: false,
             enable_pit: false,
             enable_serial: true,
@@ -215,6 +219,7 @@ impl VmConfig {
         Self {
             memory_mb: 128,
             cpus: 4,
+            firmware_type: crate::firmware::FirmwareType::Bios,
             enable_pic: true,
             enable_pit: true,
             enable_serial: true,
@@ -444,11 +449,80 @@ impl VirtualMachine {
         let mut state = self.state.write().unwrap();
         if *state == VmState::Created || *state == VmState::Stopped {
             let old_state = *state;
+            
+            // Load firmware into guest memory before starting
+            self.load_firmware();
+            
             *state = VmState::Running;
             *self.start_time.lock().unwrap() = Some(Instant::now());
             drop(state);
             self.record_event(VmEvent::StateChange { from: old_state, to: VmState::Running });
             self.record_event(VmEvent::Started);
+        }
+    }
+    
+    /// Load firmware (BIOS or UEFI) into guest memory
+    fn load_firmware(&self) {
+        use crate::firmware::{Firmware, FirmwareType, Bios, BiosConfig, UefiFirmware, UefiConfig};
+        
+        let memory_kb = (self.config.memory_mb * 1024) as u32;
+        
+        // Get raw memory slice from physical memory
+        let (ram_ptr, ram_size) = self.hal.memory.ram_region();
+        let memory_slice = unsafe { std::slice::from_raw_parts_mut(ram_ptr, ram_size) };
+        
+        match self.config.firmware_type {
+            FirmwareType::Bios => {
+                let bios_config = BiosConfig {
+                    memory_kb: core::cmp::min(memory_kb, 640),
+                    extended_memory_kb: memory_kb.saturating_sub(1024),
+                    num_hard_disks: 1,
+                    num_floppies: 0,
+                    boot_order: vec![0x80],
+                    serial_enabled: self.config.enable_serial,
+                    com_port: 0x3F8,
+                };
+                let mut bios = Bios::new(bios_config);
+                
+                // Load BIOS into memory
+                if let Ok(result) = bios.load(memory_slice) {
+                    // Set CPU entry point to BIOS reset vector
+                    if let Some(cpu) = self.hal.cpus.read().unwrap().first() {
+                        cpu.write_rip(result.entry_point);
+                    }
+                    
+                    self.record_event(VmEvent::PortIo { 
+                        port: 0x80, // POST code port
+                        value: 0x01, 
+                        is_write: true 
+                    });
+                }
+            }
+            FirmwareType::Uefi | FirmwareType::UefiSecure => {
+                let uefi_config = UefiConfig {
+                    memory_mb: self.config.memory_mb as u64,
+                    secure_boot: matches!(self.config.firmware_type, FirmwareType::UefiSecure),
+                    boot_path: String::from("\\EFI\\BOOT\\BOOTX64.EFI"),
+                    fb_width: 800,
+                    fb_height: 600,
+                    variables: Default::default(),
+                };
+                let mut uefi = UefiFirmware::new(uefi_config);
+                
+                // Load UEFI into memory
+                if let Ok(result) = uefi.load(memory_slice) {
+                    // Set CPU entry point to UEFI entry
+                    if let Some(cpu) = self.hal.cpus.read().unwrap().first() {
+                        cpu.write_rip(result.entry_point);
+                    }
+                    
+                    self.record_event(VmEvent::PortIo { 
+                        port: 0x80,
+                        value: 0x02, 
+                        is_write: true 
+                    });
+                }
+            }
         }
     }
     

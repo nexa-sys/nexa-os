@@ -1391,10 +1391,18 @@ impl VmInstance {
         
         self.set_status(VmStatus::Starting);
         
+        // Determine firmware type from spec
+        let firmware_type = match self.spec.firmware {
+            FirmwareType::Bios => crate::firmware::FirmwareType::Bios,
+            FirmwareType::Uefi => crate::firmware::FirmwareType::Uefi,
+            FirmwareType::UefiSecure => crate::firmware::FirmwareType::UefiSecure,
+        };
+        
         // Create underlying VM
         let vm_config = crate::vm::VmConfig {
             memory_mb: self.spec.memory_mb as usize,
             cpus: self.spec.vcpus as usize,
+            firmware_type,
             enable_pic: true,
             enable_pit: true,
             enable_serial: true,

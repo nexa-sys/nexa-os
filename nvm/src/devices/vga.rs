@@ -198,9 +198,12 @@ impl Vga {
             return;
         }
         
-        // Simple 8x16 font rendering
+        // 8x16 font rendering using real VGA font
         const CHAR_WIDTH: usize = 8;
         const CHAR_HEIGHT: usize = 16;
+        
+        // Get font data
+        let font_data = crate::firmware::font::get_font_data();
         
         let mut fb = self.shared_fb.lock().unwrap();
         
@@ -219,10 +222,16 @@ impl Vga {
                 let fg = self.dac_palette[fg_idx];
                 let bg = self.dac_palette[bg_idx];
                 
-                // Render character (simplified - just solid blocks for now)
-                let is_printable = ch >= 0x20 && ch < 0x7F;
+                // Get glyph data for this character
+                let glyph_start = (ch as usize) * CHAR_HEIGHT;
                 
                 for cy in 0..CHAR_HEIGHT {
+                    let glyph_row = if glyph_start + cy < font_data.len() {
+                        font_data[glyph_start + cy]
+                    } else {
+                        0
+                    };
+                    
                     for cx in 0..CHAR_WIDTH {
                         let px = col * CHAR_WIDTH + cx;
                         let py = row * CHAR_HEIGHT + cy;
@@ -233,18 +242,9 @@ impl Vga {
                         
                         let fb_idx = (py * self.fb_width + px) * 4;
                         
-                        // Simple rendering: show character as foreground, space as background
-                        let color = if is_printable && ch != b' ' {
-                            // Very basic "font" - just show a block for non-space chars
-                            // Real implementation would use a bitmap font
-                            if cx > 0 && cx < 7 && cy > 1 && cy < 14 {
-                                fg
-                            } else {
-                                bg
-                            }
-                        } else {
-                            bg
-                        };
+                        // Check if pixel is set in font glyph (MSB first)
+                        let pixel_set = (glyph_row >> (7 - cx)) & 1 != 0;
+                        let color = if pixel_set { fg } else { bg };
                         
                         // BGRA format
                         fb[fb_idx] = color[2];     // B
