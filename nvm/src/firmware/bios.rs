@@ -698,19 +698,59 @@ impl Bios {
             memory[0xFFFFE] = 0xFC;  // AT compatible
         }
         
-        // BIOS entry point at F000:E05B - simple POST and boot
+        // BIOS entry point at F000:E05B - POST initialization including PIC
         let entry = 0xFE05B;
-        if entry + 32 < memory.len() {
-            // Minimal initialization code
+        if entry + 80 < memory.len() {
+            // Real x86 BIOS POST code: initialize hardware via OUT instructions
             let code: &[u8] = &[
-                0xFA,             // CLI
-                0xFC,             // CLD
+                0xFA,             // CLI - disable interrupts during init
+                0xFC,             // CLD - clear direction flag
+                
+                // ========== Initialize segment registers ==========
                 0x31, 0xC0,       // XOR AX, AX
                 0x8E, 0xD8,       // MOV DS, AX
                 0x8E, 0xC0,       // MOV ES, AX
                 0x8E, 0xD0,       // MOV SS, AX
                 0xBC, 0x00, 0x7C, // MOV SP, 7C00h
-                0xFB,             // STI
+                
+                // ========== Initialize 8259 PIC (Master) ==========
+                // ICW1: edge triggered, cascade, ICW4 needed
+                0xB0, 0x11,       // MOV AL, 11h
+                0xE6, 0x20,       // OUT 20h, AL
+                // ICW2: vector base 08h (IRQ0 = INT 08h)
+                0xB0, 0x08,       // MOV AL, 08h
+                0xE6, 0x21,       // OUT 21h, AL
+                // ICW3: slave on IRQ2
+                0xB0, 0x04,       // MOV AL, 04h
+                0xE6, 0x21,       // OUT 21h, AL
+                // ICW4: 8086 mode, normal EOI
+                0xB0, 0x01,       // MOV AL, 01h
+                0xE6, 0x21,       // OUT 21h, AL
+                
+                // ========== Initialize 8259 PIC (Slave) ==========
+                // ICW1: edge triggered, cascade, ICW4 needed
+                0xB0, 0x11,       // MOV AL, 11h
+                0xE6, 0xA0,       // OUT A0h, AL
+                // ICW2: vector base 70h (IRQ8 = INT 70h)
+                0xB0, 0x70,       // MOV AL, 70h
+                0xE6, 0xA1,       // OUT A1h, AL
+                // ICW3: cascade identity (IRQ2)
+                0xB0, 0x02,       // MOV AL, 02h
+                0xE6, 0xA1,       // OUT A1h, AL
+                // ICW4: 8086 mode, normal EOI
+                0xB0, 0x01,       // MOV AL, 01h
+                0xE6, 0xA1,       // OUT A1h, AL
+                
+                // ========== Unmask all IRQs ==========
+                // Master PIC: unmask all (keyboard IRQ1, timer IRQ0, etc)
+                0xB0, 0x00,       // MOV AL, 00h
+                0xE6, 0x21,       // OUT 21h, AL
+                // Slave PIC: unmask all
+                0xB0, 0x00,       // MOV AL, 00h
+                0xE6, 0xA1,       // OUT A1h, AL
+                
+                // ========== Enable interrupts and boot ==========
+                0xFB,             // STI - enable interrupts
                 // Try to boot from first device
                 0xCD, 0x19,       // INT 19h (Bootstrap)
                 0xF4,             // HLT (if boot fails)
