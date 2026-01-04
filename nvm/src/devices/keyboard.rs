@@ -27,28 +27,8 @@ mod status {
     pub const PARITY: u8 = 0x80;          // Parity error
 }
 
-/// Special key codes for boot-time handling
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpecialKey {
-    /// F2 key pressed (enter BIOS setup)
-    F2,
-    /// Delete key pressed (enter BIOS setup)
-    Delete,
-    /// F12 key pressed (boot menu)
-    F12,
-    /// Escape key pressed
-    Escape,
-    /// Ctrl+Alt+Del combination detected
-    CtrlAltDel,
-    /// Enter key pressed
-    Enter,
-    /// Up arrow key
-    Up,
-    /// Down arrow key
-    Down,
-    /// F10 key (save & exit in BIOS)
-    F10,
-}
+// PS/2 keyboard only sends scancodes and triggers IRQ1
+// BIOS/OS handles key combinations like Ctrl+Alt+Del via INT 09h
 
 /// Key state tracking for modifier keys
 #[derive(Debug, Clone, Default)]
@@ -86,12 +66,12 @@ pub struct Ps2Keyboard {
     last_command: Option<u8>,
     /// Waiting for data after command
     expecting_data: bool,
-    /// Modifier key state
+    /// Modifier key state (for internal tracking only)
     modifiers: ModifierState,
-    /// Special key events detected during boot
-    special_keys: VecDeque<SpecialKey>,
     /// Interrupt pending flag
     interrupt_pending: bool,
+    /// CPU reset requested (via 0xFE command or output port bit 0)
+    reset_requested: bool,
     /// Keyboard enabled
     enabled: bool,
     /// Current scancode set (1, 2, or 3)
@@ -109,8 +89,8 @@ impl Ps2Keyboard {
             last_command: None,
             expecting_data: false,
             modifiers: ModifierState::default(),
-            special_keys: VecDeque::new(),
             interrupt_pending: false,
+            reset_requested: false,
             enabled: true,
             scancode_set: 2,
         }
@@ -118,13 +98,8 @@ impl Ps2Keyboard {
     
     /// Process an incoming scancode (from host keyboard event)
     pub fn inject_scancode(&mut self, scancode: u8, is_release: bool) {
-        // Handle modifier keys
+        // Handle modifier keys (for internal state tracking)
         self.update_modifiers(scancode, is_release);
-        
-        // Check for special key combinations during boot
-        if !is_release {
-            self.check_special_keys(scancode);
-        }
         
         // Add to output buffer
         if is_release {
@@ -307,55 +282,20 @@ impl Ps2Keyboard {
         }
         self.inject_scancode(scancode, is_release);
     }
-    
-    /// Check for Ctrl+Alt+Del and other special combinations
-    fn check_special_keys(&mut self, scancode: u8) {
-        // F2 key (scancode set 2)
-        if scancode == 0x06 {
-            self.special_keys.push_back(SpecialKey::F2);
-        }
-        
-        // F10 key
-        if scancode == 0x09 {
-            self.special_keys.push_back(SpecialKey::F10);
-        }
-        
-        // F12 key
-        if scancode == 0x07 {
-            self.special_keys.push_back(SpecialKey::F12);
-        }
-        
-        // Delete key (with E0 prefix) - 0x71
-        if scancode == 0x71 {
-            // Check if Ctrl+Alt is held
-            if self.modifiers.ctrl_pressed() && self.modifiers.alt_pressed() {
-                self.special_keys.push_back(SpecialKey::CtrlAltDel);
-            } else {
-                self.special_keys.push_back(SpecialKey::Delete);
-            }
-        }
-        
-        // Escape
-        if scancode == 0x76 {
-            self.special_keys.push_back(SpecialKey::Escape);
-        }
-        
-        // Enter
-        if scancode == 0x5A {
-            self.special_keys.push_back(SpecialKey::Enter);
-        }
-        
-        // Up arrow
-        if scancode == 0x75 {
-            self.special_keys.push_back(SpecialKey::Up);
-        }
-        
-        // Down arrow
-        if scancode == 0x72 {
-            self.special_keys.push_back(SpecialKey::Down);
-        }
+
+    /// Check if CPU reset was requested (via 0xFE command or output port)
+    /// 
+    /// This is the CORRECT x86 behavior - BIOS detects Ctrl+Alt+Del and
+    /// writes 0xFE to port 0x64, then keyboard controller pulses CPU reset line.
+    pub fn is_reset_requested(&self) -> bool {
+        self.reset_requested
     }
     
+    /// Clear reset request flag after handling
+    pub fn clear_reset_request(&mut self) {
+        self.reset_requested = false;
+    }
+
     /// Update modifier key state
     fn update_modifiers(&mut self, scancode: u8, is_release: bool) {
         match scancode {
@@ -378,40 +318,7 @@ impl Ps2Keyboard {
         }
     }
     
-    /// Poll for special key events (for boot-time handling)
-    pub fn poll_special_key(&mut self) -> Option<SpecialKey> {
-        self.special_keys.pop_front()
-    }
-    
-    /// Check if any special key was pressed
-    pub fn has_special_key(&self) -> bool {
-        !self.special_keys.is_empty()
-    }
-    
-    /// Check if setup key (F2 or DEL) was pressed
-    pub fn setup_key_pressed(&self) -> bool {
-        self.special_keys.iter().any(|k| matches!(k, SpecialKey::F2 | SpecialKey::Delete))
-    }
-    
-    /// Check if reboot combination (Ctrl+Alt+Del) was pressed
-    pub fn reboot_requested(&self) -> bool {
-        self.special_keys.iter().any(|k| matches!(k, SpecialKey::CtrlAltDel))
-    }
-    
-    /// Check if Ctrl key is currently pressed
-    pub fn is_ctrl_pressed(&self) -> bool {
-        self.modifiers.ctrl_pressed()
-    }
-    
-    /// Check if Alt key is currently pressed  
-    pub fn is_alt_pressed(&self) -> bool {
-        self.modifiers.alt_pressed()
-    }
-    
-    /// Clear special key queue
-    pub fn clear_special_keys(&mut self) {
-        self.special_keys.clear();
-    }
+
     
     /// Read from data port (0x60)
     fn read_data(&mut self) -> u8 {
@@ -498,9 +405,11 @@ impl Ps2Keyboard {
                 self.expecting_data = true;
             }
             0xFE => {
-                // Pulse output port (CPU reset)
-                // This is used for Ctrl+Alt+Del
-                self.special_keys.push_back(SpecialKey::CtrlAltDel);
+                // Pulse output port - CPU reset line
+                // Real hardware: pulses the CPU RESET pin
+                // In emulation: VM should check for this and trigger reset
+                // The reset_requested flag is checked by VM.tick()
+                self.reset_requested = true;
             }
             0xFF => {
                 // Reset controller
@@ -524,8 +433,8 @@ impl Ps2Keyboard {
                 // Bit 0 = CPU reset (0 = reset)
                 // Bit 1 = A20 gate
                 if value & 0x01 == 0 {
-                    // CPU reset requested
-                    self.special_keys.push_back(SpecialKey::CtrlAltDel);
+                    // CPU reset requested via output port
+                    self.reset_requested = true;
                 }
             }
             _ => {}
@@ -633,8 +542,8 @@ impl Device for Ps2Keyboard {
         self.last_command = None;
         self.expecting_data = false;
         self.modifiers = ModifierState::default();
-        self.special_keys.clear();
         self.interrupt_pending = false;
+        self.reset_requested = false;
         self.enabled = true;
         self.scancode_set = 2;
     }
@@ -681,61 +590,67 @@ mod tests {
         let kb = Ps2Keyboard::new();
         assert_eq!(kb.scancode_set, 2);
         assert!(kb.enabled);
+        assert!(!kb.reset_requested);
     }
     
     #[test]
-    fn test_special_key_detection() {
+    fn test_reset_via_0xfe_command() {
+        // Test CORRECT x86 behavior: BIOS sends 0xFE to trigger reset
         let mut kb = Ps2Keyboard::new();
         
-        // Inject F2 key
-        kb.inject_key("f2", false);
-        assert!(kb.setup_key_pressed());
+        // Initially no reset requested
+        assert!(!kb.is_reset_requested());
         
-        kb.clear_special_keys();
+        // BIOS sends 0xFE command to port 0x64 (pulse reset line)
+        kb.port_write(0x64, 0xFE, IoAccess::Byte);
         
-        // Inject Delete key
-        kb.inject_key("del", false);
-        assert!(kb.setup_key_pressed());
+        // Now reset should be requested
+        assert!(kb.is_reset_requested());
+        
+        // After handling, clear it
+        kb.clear_reset_request();
+        assert!(!kb.is_reset_requested());
     }
     
     #[test]
-    fn test_ctrl_alt_del() {
+    fn test_modifier_tracking() {
+        // Test that modifier keys are tracked correctly
+        // (BIOS uses this via INT 09h to detect combinations)
         let mut kb = Ps2Keyboard::new();
         
         // Press Ctrl
         kb.inject_key("lctrl", false);
+        assert!(kb.modifiers.ctrl_pressed());
+        
         // Press Alt
         kb.inject_key("lalt", false);
-        // Press Delete
-        kb.inject_key("del", false);
+        assert!(kb.modifiers.alt_pressed());
         
-        assert!(kb.reboot_requested());
+        // Release
+        kb.inject_key("lctrl", true);
+        kb.inject_key("lalt", true);
+        assert!(!kb.modifiers.ctrl_pressed());
+        assert!(!kb.modifiers.alt_pressed());
     }
     
     #[test]
-    fn test_ctrl_alt_del_from_frontend() {
-        // Test with exact key names sent by frontend: ["ctrl", "alt", "delete"]
+    fn test_scancode_output() {
+        // Test that scancodes are correctly placed in output buffer
         let mut kb = Ps2Keyboard::new();
         
-        // Simulate frontend sending Ctrl+Alt+Del combo
-        kb.inject_key("ctrl", false);    // Press ctrl
-        assert!(kb.modifiers.ctrl_pressed(), "Ctrl should be pressed after 'ctrl' key");
+        // Type 'a' key
+        kb.inject_key("a", false);
         
-        kb.inject_key("alt", false);     // Press alt
-        assert!(kb.modifiers.alt_pressed(), "Alt should be pressed after 'alt' key");
+        // Should have scancode in buffer
+        assert!(!kb.output_buffer.is_empty());
+        assert_eq!(kb.output_buffer[0], 0x1C); // 'a' scancode
         
-        kb.inject_key("delete", false);  // Press delete
+        // Status should show data available
+        assert!(kb.status & 0x01 != 0);
         
-        // Check if reboot was requested
-        assert!(kb.reboot_requested(), "Ctrl+Alt+Del should trigger reboot request");
-        
-        // Now simulate release in reverse order
-        kb.inject_key("delete", true);
-        kb.inject_key("alt", true);
-        kb.inject_key("ctrl", true);
-        
-        assert!(!kb.modifiers.ctrl_pressed(), "Ctrl should be released");
-        assert!(!kb.modifiers.alt_pressed(), "Alt should be released");
+        // Read should clear buffer
+        let data = kb.port_read(0x60, IoAccess::Byte);
+        assert_eq!(data, 0x1C);
     }
     
     #[test]

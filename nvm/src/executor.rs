@@ -528,7 +528,10 @@ impl VmExecutor {
     /// Advance VM execution by specified cycles
     /// This must be called periodically to process device ticks, interrupts, and CPU execution.
     /// For real-time emulation, call with ~10000 cycles per 10ms for approximate 1MHz emulation.
-    pub fn tick_vm(&self, vm_id: &str, cycles: u64) -> VmExecResult<()> {
+    /// 
+    /// Returns true if VM is still running normally, false if it was reset
+    /// (e.g., due to Ctrl+Alt+Del being detected by BIOS and triggering keyboard controller reset)
+    pub fn tick_vm(&self, vm_id: &str, cycles: u64) -> VmExecResult<bool> {
         let running_vm = self.get_running_vm(vm_id)?;
         
         self.hypervisor.vm_tick(running_vm.hv_id, cycles)

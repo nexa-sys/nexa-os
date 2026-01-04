@@ -1209,10 +1209,12 @@ impl Hypervisor {
     
     /// Advance VM execution by specified cycles
     /// Must be called periodically to process device interrupts and CPU execution
-    pub fn vm_tick(&self, id: VmId, cycles: u64) -> HypervisorResult<()> {
+    /// 
+    /// Returns true if VM is still running normally, false if it was reset
+    /// (e.g., due to Ctrl+Alt+Del via keyboard controller 0xFE command)
+    pub fn vm_tick(&self, id: VmId, cycles: u64) -> HypervisorResult<bool> {
         let vm = self.get_vm(id)?;
-        vm.tick(cycles);
-        Ok(())
+        Ok(vm.tick(cycles))
     }
     
     /// Get VM by ID
@@ -1562,9 +1564,13 @@ impl VmInstance {
     
     /// Advance VM execution by specified cycles
     /// This processes device ticks, interrupts, and CPU execution
-    pub fn tick(&self, cycles: u64) {
+    /// 
+    /// Returns true if VM continues normally, false if it was reset
+    pub fn tick(&self, cycles: u64) -> bool {
         if let Some(vm) = self.vm.read().unwrap().as_ref() {
-            vm.run(cycles);
+            vm.tick(cycles)
+        } else {
+            true // No VM, just return true
         }
     }
 

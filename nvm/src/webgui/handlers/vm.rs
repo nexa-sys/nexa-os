@@ -1475,7 +1475,15 @@ async fn handle_console_socket(
             // 10000 cycles per 100ms tick = ~100kHz effective emulation speed
             {
                 let executor = vm_executor();
-                let _ = executor.tick_vm(&vm_id_clone, 10000);
+                match executor.tick_vm(&vm_id_clone, 10000) {
+                    Ok(true) => {}, // Normal operation
+                    Ok(false) => {
+                        // VM was reset (e.g., Ctrl+Alt+Del via keyboard controller)
+                        log::info!("[Console] VM {} was reset via keyboard controller", vm_id_clone);
+                        // Continue running - VM will restart from BIOS
+                    },
+                    Err(_) => break, // VM stopped or error
+                }
             }
             
             // Get framebuffer from VM

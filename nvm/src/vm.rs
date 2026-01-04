@@ -1126,15 +1126,28 @@ impl VirtualMachine {
     // ========================================================================
     
     /// Advance VM time
-    pub fn tick(&self, cycles: u64) {
-        self.hal.tick(cycles);
+    /// 
+    /// Returns true if VM should continue running, false if reset was triggered.
+    pub fn tick(&self, cycles: u64) -> bool {
+        use crate::hal::TickResult;
+        
+        let result = self.hal.tick(cycles);
         self.stats.lock().unwrap().total_cycles += cycles;
+        
+        // Check if keyboard controller requested reset (via 0xFE command)
+        // This is the CORRECT x86 behavior: BIOS handles Ctrl+Alt+Del,
+        // writes 0xFE to port 0x64, keyboard controller pulses CPU reset line
+        if result == TickResult::ResetRequested {
+            self.reset();
+            return false;
+        }
+        true
     }
     
     /// Run for a number of cycles
     pub fn run(&self, cycles: u64) {
         if self.is_running() {
-            self.tick(cycles);
+            let _ = self.tick(cycles);
         }
     }
     
@@ -1145,7 +1158,10 @@ impl VirtualMachine {
     {
         let mut cycles = 0u64;
         while cycles < max_cycles && !condition(self) {
-            self.tick(1000);
+            if !self.tick(1000) {
+                // VM was reset
+                return false;
+            }
             cycles += 1000;
         }
         condition(self)
@@ -1515,7 +1531,7 @@ mod tests {
         let vm = VirtualMachine::new();
         
         // Run some cycles
-        vm.tick(10000);
+        let _ = vm.tick(10000);
         
         let stats = vm.statistics();
         assert!(stats.total_cycles >= 10000);

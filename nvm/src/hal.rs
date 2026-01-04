@@ -17,6 +17,16 @@ use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use x86_64::registers::control::Cr3Flags;
 use x86_64::PhysAddr;
 
+/// Result of a HAL tick operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickResult {
+    /// Normal operation, continue running
+    Continue,
+    /// CPU reset requested (via keyboard controller 0xFE command)
+    /// The VM should reset when it sees this
+    ResetRequested,
+}
+
 // Global HAL instance (thread-local for test isolation)
 thread_local! {
     static HAL: RwLock<Option<Arc<HardwareAbstractionLayer>>> = RwLock::new(None);
@@ -327,7 +337,11 @@ impl HardwareAbstractionLayer {
     /// 2. Tick devices (which forwards device IRQs to PIC)
     /// 3. Check PIC for pending interrupts
     /// 4. If CPU has interrupts enabled, inject interrupt to CPU
-    pub fn tick(&self, cycles: u64) {
+    /// 5. Check keyboard controller for reset request (0xFE command)
+    /// 
+    /// Returns `TickResult::ResetRequested` if keyboard controller received
+    /// the 0xFE command (BIOS's way of triggering CPU reset via Ctrl+Alt+Del).
+    pub fn tick(&self, cycles: u64) -> TickResult {
         // Phase 1: Advance all CPUs
         for cpu in self.cpus.read().unwrap().iter() {
             cpu.advance_cycles(cycles);
@@ -339,6 +353,32 @@ impl HardwareAbstractionLayer {
         // Phase 3: Check PIC and inject interrupts to CPU
         // This models the INTR line from PIC to CPU
         self.check_and_deliver_interrupts();
+        
+        // Phase 4: Check keyboard controller for reset request
+        // This models the keyboard controller pulsing the CPU RESET line
+        // when it receives the 0xFE command (from BIOS handling Ctrl+Alt+Del)
+        self.check_keyboard_reset()
+    }
+    
+    /// Check if keyboard controller has received reset command (0xFE)
+    /// 
+    /// Real x86 flow: BIOS detects Ctrl+Alt+Del via INT 09h → writes 0xFE
+    /// to port 0x64 → keyboard controller pulses CPU RESET line
+    fn check_keyboard_reset(&self) -> TickResult {
+        use crate::devices::keyboard::Ps2Keyboard;
+        use crate::devices::DeviceId;
+        
+        if let Some(kb_dev) = self.devices.get_device(DeviceId::KEYBOARD) {
+            let mut kb_guard = kb_dev.lock().unwrap();
+            if let Some(keyboard) = kb_guard.as_any_mut().downcast_mut::<Ps2Keyboard>() {
+                if keyboard.is_reset_requested() {
+                    // Clear the flag and signal reset
+                    keyboard.clear_reset_request();
+                    return TickResult::ResetRequested;
+                }
+            }
+        }
+        TickResult::Continue
     }
     
     /// Check PIC for pending interrupts and deliver to CPU
@@ -726,7 +766,8 @@ mod tests {
         // 1. Forward keyboard IRQ1 to PIC
         // 2. Check PIC for interrupts
         // 3. Inject interrupt to CPU
-        hal.tick(1000);
+        let result = hal.tick(1000);
+        assert_eq!(result, TickResult::Continue, "Normal tick should return Continue");
         
         // Verify CPU received the interrupt
         assert!(hal.cpu().has_pending_interrupt(), "CPU should have pending interrupt after tick");
