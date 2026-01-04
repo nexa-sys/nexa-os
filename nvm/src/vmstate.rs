@@ -304,7 +304,17 @@ impl VmStateManager {
     fn load_state(&mut self) {
         if self.state_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&self.state_file) {
-                if let Ok(state) = serde_json::from_str::<PersistedState>(&content) {
+                if let Ok(mut state) = serde_json::from_str::<PersistedState>(&content) {
+                    // Reset all "running" VMs to "stopped" on server restart
+                    // because they are not actually running anymore
+                    for vm in state.vms.values_mut() {
+                        if vm.status == VmStatus::Running {
+                            log::info!("VM '{}' was marked running, resetting to stopped (server restarted)", vm.name);
+                            vm.status = VmStatus::Stopped;
+                            vm.started_at = None;
+                        }
+                    }
+                    
                     *self.vms.write() = state.vms;
                     *self.storage_pools.write() = state.storage_pools;
                     *self.networks.write() = state.networks;
@@ -313,6 +323,9 @@ impl VmStateManager {
                     *self.backups.write() = state.backups;
                     *self.backup_schedules.write() = state.backup_schedules;
                     log::info!("Loaded {} VMs from state file", self.vms.read().len());
+                    
+                    // Save immediately to persist the status reset
+                    let _ = self.save_state_internal();
                     return;
                 }
             }
@@ -324,8 +337,8 @@ impl VmStateManager {
             "NVM Enterprise Platform started", None, None);
     }
     
-    /// Save state to disk
-    pub fn save_state(&self) -> std::io::Result<()> {
+    /// Internal save (used during load when we already hold data)
+    fn save_state_internal(&self) -> std::io::Result<()> {
         if let Some(parent) = self.state_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -345,6 +358,11 @@ impl VmStateManager {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(&self.state_file, content)?;
         Ok(())
+    }
+    
+    /// Save state to disk
+    pub fn save_state(&self) -> std::io::Result<()> {
+        self.save_state_internal()
     }
     
     // ========== Event Logging ==========

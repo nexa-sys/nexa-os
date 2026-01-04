@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useVmsStore } from '@/stores/vms'
 
@@ -13,11 +13,14 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const consoleMessages = ref<string[]>([])
 
-// VNC connection
+// Console display
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let ws: WebSocket | null = null
 let reconnectAttempts = 0
 const maxReconnectAttempts = 3
+let canvasCtx: CanvasRenderingContext2D | null = null
+let displayWidth = 800
+let displayHeight = 600
 
 onMounted(async () => {
   // Fetch VM info
@@ -38,12 +41,61 @@ onMounted(async () => {
   connectWebSocket()
 })
 
+function initCanvas(width: number, height: number) {
+  displayWidth = width
+  displayHeight = height
+  
+  nextTick(() => {
+    if (canvasRef.value) {
+      canvasRef.value.width = width
+      canvasRef.value.height = height
+      canvasCtx = canvasRef.value.getContext('2d')
+      
+      // Fill with black initially
+      if (canvasCtx) {
+        canvasCtx.fillStyle = '#000000'
+        canvasCtx.fillRect(0, 0, width, height)
+      }
+    }
+  })
+}
+
+function renderFramebuffer(data: ArrayBuffer) {
+  if (!canvasCtx || !canvasRef.value) return
+  
+  const view = new DataView(data)
+  
+  // Parse header: [type(1), width(2), height(2), reserved(3), data...]
+  const frameType = view.getUint8(0)
+  if (frameType !== 0x01) {
+    console.warn('Unknown frame type:', frameType)
+    return
+  }
+  
+  const width = view.getUint16(1, true)  // Little endian
+  const height = view.getUint16(3, true)
+  
+  // Update canvas size if needed
+  if (width !== displayWidth || height !== displayHeight) {
+    initCanvas(width, height)
+    return // Canvas will be ready on next frame
+  }
+  
+  // Get pixel data (RGBA format, 4 bytes per pixel)
+  const pixelData = new Uint8ClampedArray(data, 8)
+  
+  // Create ImageData and draw to canvas
+  const imageData = new ImageData(pixelData, width, height)
+  canvasCtx.putImageData(imageData, 0, 0)
+}
+
 function connectWebSocket() {
-  // Connect to VNC/SPICE via WebSocket
+  // Connect to framebuffer console via WebSocket
   try {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/api/v2/vms/${vmId}/console/ws`
     ws = new WebSocket(wsUrl)
+    ws.binaryType = 'arraybuffer'
     
     ws.onopen = () => {
       connected.value = true
@@ -76,17 +128,28 @@ function connectWebSocket() {
     }
     
     ws.onmessage = (event) => {
-      // Handle console messages
+      // Handle binary framebuffer data
+      if (event.data instanceof ArrayBuffer) {
+        renderFramebuffer(event.data)
+        return
+      }
+      
+      // Handle JSON messages
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'connected') {
           consoleMessages.value.push(`Console ready: ${data.message}`)
+          // Initialize canvas with server-provided dimensions
+          if (data.width && data.height) {
+            initCanvas(data.width, data.height)
+          }
         } else if (data.type === 'error') {
           consoleMessages.value.push(`Error: ${data.message}`)
+        } else if (data.type === 'pong') {
+          // Keep-alive response
         }
       } catch {
-        // Binary VNC data - would be handled by noVNC library
-        console.log('Received binary data:', event.data.length, 'bytes')
+        console.warn('Unexpected message format:', event.data)
       }
     }
   } catch (e) {
@@ -108,6 +171,12 @@ function sendCtrlAltDel() {
   }
 }
 
+function requestFrame() {
+  if (ws && connected.value) {
+    ws.send(JSON.stringify({ type: 'request_frame' }))
+  }
+}
+
 function toggleFullscreen() {
   const container = document.getElementById('console-container')
   if (container) {
@@ -117,6 +186,37 @@ function toggleFullscreen() {
       container.requestFullscreen()
     }
   }
+}
+
+// Handle keyboard events
+function handleKeyDown(e: KeyboardEvent) {
+  if (!ws || !connected.value) return
+  
+  ws.send(JSON.stringify({
+    type: 'key',
+    action: 'down',
+    code: e.code,
+    key: e.key,
+    ctrlKey: e.ctrlKey,
+    altKey: e.altKey,
+    shiftKey: e.shiftKey
+  }))
+  
+  // Prevent default for most keys when console is focused
+  if (e.key !== 'F11' && e.key !== 'F12') {
+    e.preventDefault()
+  }
+}
+
+function handleKeyUp(e: KeyboardEvent) {
+  if (!ws || !connected.value) return
+  
+  ws.send(JSON.stringify({
+    type: 'key',
+    action: 'up',
+    code: e.code,
+    key: e.key
+  }))
 }
 </script>
 
@@ -186,12 +286,14 @@ function toggleFullscreen() {
         </button>
       </div>
 
-      <!-- VNC Canvas -->
+      <!-- Framebuffer Canvas -->
       <canvas
         v-else
         ref="canvasRef"
-        class="max-w-full max-h-full"
+        class="max-w-full max-h-full border border-dark-600"
         tabindex="0"
+        @keydown="handleKeyDown"
+        @keyup="handleKeyUp"
       />
     </div>
   </div>

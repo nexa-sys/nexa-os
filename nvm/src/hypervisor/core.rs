@@ -1164,6 +1164,35 @@ impl Hypervisor {
             .collect()
     }
     
+    // ========================================================================
+    // VGA / Console Access
+    // ========================================================================
+    
+    /// Get VGA framebuffer for a VM
+    pub fn get_vm_vga_framebuffer(&self, id: VmId) -> HypervisorResult<Option<Vec<u8>>> {
+        let vm = self.get_vm(id)?;
+        Ok(vm.get_vga_framebuffer())
+    }
+    
+    /// Get VGA dimensions for a VM
+    pub fn get_vm_vga_dimensions(&self, id: VmId) -> HypervisorResult<Option<(u32, u32)>> {
+        let vm = self.get_vm(id)?;
+        Ok(vm.get_vga_dimensions())
+    }
+    
+    /// Check if VM has VGA device
+    pub fn vm_has_vga(&self, id: VmId) -> HypervisorResult<bool> {
+        let vm = self.get_vm(id)?;
+        Ok(vm.has_vga())
+    }
+    
+    /// Write to VM's VGA console
+    pub fn vm_vga_write(&self, id: VmId, text: &str) -> HypervisorResult<()> {
+        let vm = self.get_vm(id)?;
+        vm.vga_write(text);
+        Ok(())
+    }
+    
     /// Get VM by ID
     fn get_vm(&self, id: VmId) -> HypervisorResult<Arc<VmInstance>> {
         self.vms.read().unwrap()
@@ -1371,6 +1400,7 @@ impl VmInstance {
             enable_serial: true,
             enable_rtc: true,
             enable_apic: self.spec.vcpus > 1,
+            enable_vga: true,  // Enable VGA for console display
             enable_tracing: true,
             max_trace_size: 10000,
             name: self.spec.name.clone(),
@@ -1449,6 +1479,35 @@ impl VmInstance {
         Ok(())
     }
     
+    /// Get VGA framebuffer data for console display
+    pub fn get_vga_framebuffer(&self) -> Option<Vec<u8>> {
+        self.vm.read().unwrap()
+            .as_ref()
+            .and_then(|vm| vm.get_vga_framebuffer())
+    }
+    
+    /// Get VGA display dimensions (width, height)
+    pub fn get_vga_dimensions(&self) -> Option<(u32, u32)> {
+        self.vm.read().unwrap()
+            .as_ref()
+            .and_then(|vm| vm.get_vga_dimensions())
+    }
+    
+    /// Check if VM has VGA device
+    pub fn has_vga(&self) -> bool {
+        self.vm.read().unwrap()
+            .as_ref()
+            .map(|vm| vm.has_vga())
+            .unwrap_or(false)
+    }
+    
+    /// Write to VGA console (text mode)
+    pub fn vga_write(&self, text: &str) {
+        if let Some(vm) = self.vm.read().unwrap().as_ref() {
+            vm.vga_write(text);
+        }
+    }
+
     pub fn snapshot(&self, name: &str) -> HypervisorResult<String> {
         let snap = VmSnapshot {
             name: name.to_string(),

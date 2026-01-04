@@ -1279,49 +1279,97 @@ async fn handle_console_error(
 #[cfg(feature = "webgui")]
 async fn handle_console_socket(
     socket: axum::extract::ws::WebSocket,
-    state: Arc<WebGuiState>,
+    _state: Arc<WebGuiState>,
     vm_id: String,
 ) {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
+    use crate::executor::vm_executor;
     
     let (mut sender, mut receiver) = socket.split();
     
-    // Send initial connection success message
+    // Get VGA dimensions
+    let (width, height) = {
+        let executor = vm_executor();
+        executor.get_vga_dimensions(&vm_id)
+            .ok()
+            .flatten()
+            .unwrap_or((800, 600))
+    };
+    
+    // Send initial connection success message with display info
     let _ = sender.send(Message::Text(serde_json::json!({
         "type": "connected",
         "vm_id": vm_id,
-        "console_type": "vnc",
+        "console_type": "framebuffer",
+        "width": width,
+        "height": height,
         "message": "Console connection established"
     }).to_string().into())).await;
     
-    // In a real implementation, this would connect to QEMU's VNC server
-    // and proxy the VNC protocol over WebSocket (like noVNC does)
+    // Spawn framebuffer update task
+    let vm_id_clone = vm_id.clone();
+    let frame_sender = Arc::new(tokio::sync::Mutex::new(sender));
+    let frame_sender_clone = frame_sender.clone();
     
-    // For now, we'll just echo messages and handle basic commands
+    let update_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100)); // 10 FPS
+        loop {
+            interval.tick().await;
+            
+            // Get framebuffer from VM
+            let framebuffer = {
+                let executor = vm_executor();
+                match executor.get_vga_framebuffer(&vm_id_clone) {
+                    Ok(Some(fb)) => fb,
+                    Ok(None) => continue, // No VGA device
+                    Err(_) => break, // VM stopped
+                }
+            };
+            
+            // Send framebuffer as binary data with header
+            let mut data = Vec::with_capacity(8 + framebuffer.len());
+            // Header: [type(1), width(2), height(2), reserved(3)]
+            data.push(0x01); // Frame type
+            data.extend_from_slice(&(width as u16).to_le_bytes());
+            data.extend_from_slice(&(height as u16).to_le_bytes());
+            data.extend_from_slice(&[0u8; 3]); // Reserved
+            data.extend_from_slice(&framebuffer);
+            
+            let mut sender = frame_sender_clone.lock().await;
+            if sender.send(Message::Binary(data.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+    
+    // Handle incoming messages
     while let Some(msg) = receiver.next().await {
         if let Ok(msg) = msg {
             match msg {
                 Message::Text(text) => {
                     // Handle console commands
                     if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text) {
+                        let mut sender = frame_sender.lock().await;
                         match cmd.get("type").and_then(|t| t.as_str()) {
                             Some("key") => {
-                                // Would forward key events to QEMU
+                                // Forward key events to VM
+                                // TODO: Implement keyboard input handling
                                 let _ = sender.send(Message::Text(serde_json::json!({
                                     "type": "ack",
                                     "command": "key"
                                 }).to_string().into())).await;
                             }
                             Some("mouse") => {
-                                // Would forward mouse events to QEMU
+                                // Forward mouse events to VM
+                                // TODO: Implement mouse input handling
                                 let _ = sender.send(Message::Text(serde_json::json!({
                                     "type": "ack",
                                     "command": "mouse"
                                 }).to_string().into())).await;
                             }
                             Some("resize") => {
-                                // Would handle screen resize
+                                // Handle screen resize request
                                 let _ = sender.send(Message::Text(serde_json::json!({
                                     "type": "ack",
                                     "command": "resize"
@@ -1332,6 +1380,22 @@ async fn handle_console_socket(
                                     "type": "pong"
                                 }).to_string().into())).await;
                             }
+                            Some("request_frame") => {
+                                // Client requesting immediate frame update
+                                let framebuffer = {
+                                    let executor = vm_executor();
+                                    executor.get_vga_framebuffer(&vm_id).ok().flatten()
+                                };
+                                if let Some(fb) = framebuffer {
+                                    let mut data = Vec::with_capacity(8 + fb.len());
+                                    data.push(0x01);
+                                    data.extend_from_slice(&(width as u16).to_le_bytes());
+                                    data.extend_from_slice(&(height as u16).to_le_bytes());
+                                    data.extend_from_slice(&[0u8; 3]);
+                                    data.extend_from_slice(&fb);
+                                    let _ = sender.send(Message::Binary(data.into())).await;
+                                }
+                            }
                             _ => {
                                 let _ = sender.send(Message::Text(serde_json::json!({
                                     "type": "error",
@@ -1341,12 +1405,11 @@ async fn handle_console_socket(
                         }
                     }
                 }
-                Message::Binary(data) => {
-                    // Binary data would be VNC protocol frames
-                    // Echo back for now (in real impl, proxy to QEMU VNC)
-                    let _ = sender.send(Message::Binary(data)).await;
+                Message::Binary(_data) => {
+                    // Binary input (keyboard scancodes, etc.) - not yet implemented
                 }
                 Message::Ping(data) => {
+                    let mut sender = frame_sender.lock().await;
                     let _ = sender.send(Message::Pong(data)).await;
                 }
                 Message::Close(_) => break,
@@ -1354,6 +1417,9 @@ async fn handle_console_socket(
             }
         }
     }
+    
+    // Cancel update task
+    update_task.abort();
     
     log::debug!("Console WebSocket closed for VM {}", vm_id);
 }

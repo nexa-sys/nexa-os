@@ -314,6 +314,9 @@ pub mod lapic;
 /// I/O APIC emulation
 pub mod ioapic;
 
+/// VGA/Framebuffer emulation
+pub mod vga;
+
 #[cfg(test)]
 mod tests {
     use super::*;

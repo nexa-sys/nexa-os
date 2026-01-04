@@ -248,6 +248,9 @@ impl WebGuiServer {
             }
         }
 
+        // Restore VM registrations from vmstate to hypervisor
+        Self::restore_vm_registrations();
+
         // Check if embedded frontend is available
         let has_frontend = super::frontend::has_frontend();
         if has_frontend {
@@ -407,5 +410,79 @@ impl WebGuiServer {
             rt.block_on(self.start())?;
         }
         Ok(())
+    }
+    
+    /// Restore VM registrations from persisted state to hypervisor
+    /// Called on server startup to rebuild vm_ids mapping
+    fn restore_vm_registrations() {
+        use crate::vmstate::VmStateManager;
+        use crate::executor::{vm_executor, VmExecConfig, DiskExecConfig, NetworkExecConfig, NetworkType};
+        
+        let state_manager = VmStateManager::new();
+        let vms = state_manager.list_vms();
+        let vms_count = vms.len();
+        
+        if vms.is_empty() {
+            log::info!("No VMs to restore");
+            return;
+        }
+        
+        log::info!("Restoring {} VM registrations to hypervisor...", vms_count);
+        
+        let mut executor = vm_executor();
+        let mut restored = 0;
+        
+        for vm in vms {
+            // Build exec config from VM state
+            let config = VmExecConfig {
+                vm_id: vm.id.clone(),
+                name: vm.name.clone(),
+                vcpus: vm.vcpus,
+                cpu_sockets: 1,
+                cpu_cores: vm.vcpus,
+                cpu_threads: 1,
+                cpu_model: "host".to_string(),
+                memory_mb: vm.memory_mb,
+                memory_balloon: false,
+                disks: vm.disk_paths.iter().map(|p| DiskExecConfig {
+                    path: p.clone(),
+                    format: "qcow2".to_string(),
+                    bus: "virtio".to_string(),
+                    cache: "none".to_string(),
+                    io: "native".to_string(),
+                    bootable: true,
+                    discard: true,
+                    readonly: false,
+                    serial: None,
+                }).collect(),
+                networks: vm.network_interfaces.iter().map(|nic| NetworkExecConfig {
+                    id: nic.id.clone(),
+                    mac: nic.mac.clone(),
+                    net_type: NetworkType::User,
+                    bridge: None,
+                    model: nic.model.clone(),
+                    multiqueue: false,
+                    queues: 1,
+                    vlan_id: None,
+                }).collect(),
+                cdrom_iso: None,
+                firmware: crate::executor::FirmwareType::Uefi,
+                secure_boot: false,
+                tpm_enabled: false,
+                tpm_version: "2.0".to_string(),
+                machine_type: "q35".to_string(),
+                nested_virt: false,
+                vnc_display: None,
+                qmp_socket: None,
+                enable_kvm: true,
+                extra_args: vec![],
+            };
+            
+            if executor.restore_vm_registration(config).is_ok() {
+                restored += 1;
+            }
+        }
+        
+        log::info!("Restored {}/{} VM registrations", restored, vms_count);
     }
 }

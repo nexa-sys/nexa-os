@@ -235,6 +235,32 @@ impl VmExecutor {
         }
     }
     
+    /// Re-register a VM to hypervisor (called on server startup to restore vm_ids mapping)
+    /// This does NOT start the VM, just registers it so it can be started later
+    pub fn restore_vm_registration(&mut self, config: VmExecConfig) -> VmExecResult<()> {
+        // Skip if already registered
+        if self.vm_ids.contains_key(&config.vm_id) {
+            return Ok(());
+        }
+        
+        // Build VM spec from config
+        let spec = self.build_vm_spec(&config)?;
+        
+        // Create VM in hypervisor (just registers, doesn't start)
+        match self.hypervisor.create_vm(spec) {
+            Ok(hv_id) => {
+                self.vm_ids.insert(config.vm_id.clone(), hv_id);
+                log::info!("Restored VM registration: {} (hypervisor ID: {})", config.vm_id, hv_id);
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!("Failed to restore VM '{}' registration: {}", config.vm_id, e);
+                // Don't fail - VM may have corrupted disk, but we can still show it in UI
+                Ok(())
+            }
+        }
+    }
+    
     /// Create with custom data directory
     pub fn with_data_dir(data_dir: PathBuf) -> Self {
         let mut executor = Self::new();
@@ -443,6 +469,43 @@ impl VmExecutor {
         self.running_vms.keys().cloned().collect()
     }
     
+    // ========================================================================
+    // VGA / Console Access
+    // ========================================================================
+    
+    /// Get VGA framebuffer for a VM's console display
+    /// Returns RGBA data (width * height * 4 bytes)
+    pub fn get_vga_framebuffer(&self, vm_id: &str) -> VmExecResult<Option<Vec<u8>>> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.get_vm_vga_framebuffer(running_vm.hv_id)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
+    
+    /// Get VGA display dimensions for a VM
+    pub fn get_vga_dimensions(&self, vm_id: &str) -> VmExecResult<Option<(u32, u32)>> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.get_vm_vga_dimensions(running_vm.hv_id)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
+    
+    /// Check if VM has VGA device
+    pub fn vm_has_vga(&self, vm_id: &str) -> VmExecResult<bool> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.vm_has_vga(running_vm.hv_id)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
+    
+    /// Write text to VM's VGA console (text mode)
+    pub fn vga_write(&self, vm_id: &str, text: &str) -> VmExecResult<()> {
+        let running_vm = self.get_running_vm(vm_id)?;
+        
+        self.hypervisor.vm_vga_write(running_vm.hv_id, text)
+            .map_err(|e| VmExecError::ConsoleError(e.to_string()))
+    }
+
     /// Get VM data directory
     pub fn vm_data_dir(&self, vm_id: &str) -> PathBuf {
         self.data_dir.join("vms").join(vm_id)

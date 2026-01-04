@@ -158,6 +158,8 @@ pub struct VmConfig {
     pub enable_rtc: bool,
     /// Enable APIC (LAPIC + IOAPIC)
     pub enable_apic: bool,
+    /// Enable VGA display adapter
+    pub enable_vga: bool,
     /// Enable event tracing
     pub enable_tracing: bool,
     /// Maximum trace buffer size
@@ -180,6 +182,7 @@ impl Default for VmConfig {
             enable_serial: true,
             enable_rtc: true,
             enable_apic: true,
+            enable_vga: true,
             enable_tracing: true,
             max_trace_size: 10000,
             name: String::from("NexaOS-TestVM"),
@@ -199,6 +202,7 @@ impl VmConfig {
             enable_serial: true,
             enable_rtc: false,
             enable_apic: false,
+            enable_vga: false,
             enable_tracing: false,
             max_trace_size: 1000,
             name: String::from("MinimalVM"),
@@ -216,6 +220,7 @@ impl VmConfig {
             enable_serial: true,
             enable_rtc: true,
             enable_apic: true,
+            enable_vga: true,
             enable_tracing: true,
             max_trace_size: 50000,
             name: String::from("FullVM"),
@@ -319,6 +324,8 @@ pub struct VirtualMachine {
     state: RwLock<VmState>,
     /// Serial output capture
     serial_output: Arc<Mutex<Vec<u8>>>,
+    /// VGA display device
+    vga_device: Option<Arc<Mutex<crate::devices::vga::Vga>>>,
     /// Event log
     events: Arc<Mutex<VecDeque<VmEvent>>>,
     /// Maximum event log size
@@ -388,6 +395,26 @@ impl VirtualMachine {
             hal.devices.add_device(Arc::new(Mutex::new(ioapic)));
         }
         
+        // VGA display device
+        let vga_device = if config.enable_vga {
+            let vga = Arc::new(Mutex::new(crate::devices::vga::Vga::new()));
+            // Initialize with text mode message
+            {
+                let mut vga_lock = vga.lock().unwrap();
+                vga_lock.clear();
+                vga_lock.write_string("NexaOS Virtual Machine Console\n");
+                vga_lock.write_string("-----------------------------\n\n");
+            }
+            // Register VGA port ranges (3C0-3CF for attribute/misc, 3D4-3D5 for CRTC)
+            hal.devices.add_device_with_ports(
+                vga.clone(),
+                &[(0x3C0, 0x3CF), (0x3D4, 0x3D5)],
+            );
+            Some(vga)
+        } else {
+            None
+        };
+        
         // Add additional CPUs
         for _ in 1..config.cpus {
             hal.add_cpu();
@@ -398,6 +425,7 @@ impl VirtualMachine {
             config,
             state: RwLock::new(VmState::Created),
             serial_output,
+            vga_device,
             events: Arc::new(Mutex::new(VecDeque::with_capacity(max_events))),
             max_events,
             snapshots: RwLock::new(HashMap::new()),
@@ -540,6 +568,40 @@ impl VirtualMachine {
         self.hal.switch_cpu(id);
     }
     
+    // ========================================================================
+    // VGA / Console Access
+    // ========================================================================
+    
+    /// Get VGA framebuffer as RGBA data (800x600x4 = 1920000 bytes)
+    /// Returns None if VGA is not enabled
+    pub fn get_vga_framebuffer(&self) -> Option<Vec<u8>> {
+        self.vga_device.as_ref().map(|vga| {
+            let vga_lock = vga.lock().unwrap();
+            vga_lock.get_framebuffer().lock().unwrap().clone()
+        })
+    }
+    
+    /// Get VGA display dimensions
+    pub fn get_vga_dimensions(&self) -> Option<(u32, u32)> {
+        self.vga_device.as_ref().map(|vga| {
+            let vga_lock = vga.lock().unwrap();
+            (vga_lock.width() as u32, vga_lock.height() as u32)
+        })
+    }
+    
+    /// Check if VGA is enabled
+    pub fn has_vga(&self) -> bool {
+        self.vga_device.is_some()
+    }
+    
+    /// Write text to VGA console (text mode)
+    pub fn vga_write(&self, text: &str) {
+        if let Some(vga) = &self.vga_device {
+            let mut vga_lock = vga.lock().unwrap();
+            vga_lock.write_string(text);
+        }
+    }
+
     // ========================================================================
     // Device Management (Hot-plug support)
     // ========================================================================
