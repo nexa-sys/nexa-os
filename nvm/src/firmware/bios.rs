@@ -740,6 +740,64 @@ impl Bios {
             memory[int19_handler..int19_handler + code.len()].copy_from_slice(code);
         }
     }
+    
+    /// Initialize ACPI tables for modern OS support
+    fn init_acpi_tables(&self, memory: &mut [u8]) {
+        // ACPI RSDP at E0000 (EBDA or ROM area)
+        let rsdp_addr = 0xE0000usize;
+        if rsdp_addr + 36 >= memory.len() {
+            return;
+        }
+        
+        // RSDP signature "RSD PTR "
+        let rsdp: &[u8] = &[
+            b'R', b'S', b'D', b' ', b'P', b'T', b'R', b' ', // Signature
+            0x00,  // Checksum (to be calculated)
+            b'N', b'E', b'X', b'A', b' ', b' ', // OEM ID
+            0x02,  // Revision (ACPI 2.0)
+            0x00, 0x00, 0x00, 0x00, // RSDT Address (will set below)
+            0x24, 0x00, 0x00, 0x00, // Length (36 bytes for RSDP 2.0)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // XSDT Address
+            0x00, // Extended checksum
+            0x00, 0x00, 0x00, // Reserved
+        ];
+        memory[rsdp_addr..rsdp_addr + rsdp.len()].copy_from_slice(rsdp);
+        
+        // Calculate checksum for first 20 bytes
+        let mut sum: u8 = 0;
+        for i in 0..20 {
+            sum = sum.wrapping_add(memory[rsdp_addr + i]);
+        }
+        memory[rsdp_addr + 8] = (256 - sum as u16) as u8;
+    }
+    
+    /// Initialize MP (MultiProcessor) tables for SMP support
+    fn init_mp_tables(&self, memory: &mut [u8]) {
+        // MP Floating Pointer Structure at 0x9FC00 (end of conventional memory)
+        let mp_addr = 0x9FC00usize;
+        if mp_addr + 16 >= memory.len() {
+            return;
+        }
+        
+        // MP floating pointer signature "_MP_"
+        let mp_fps: &[u8] = &[
+            b'_', b'M', b'P', b'_',  // Signature
+            0x00, 0x00, 0x00, 0x00,  // Physical pointer (0 = default config)
+            0x10,                    // Length (16 bytes)
+            0x04,                    // Spec revision 1.4
+            0x00,                    // Checksum (calculated below)
+            0x00,                    // MP feature byte 1 (0 = MP table present)
+            0x00, 0x00, 0x00, 0x00,  // MP feature bytes 2-5
+        ];
+        memory[mp_addr..mp_addr + mp_fps.len()].copy_from_slice(mp_fps);
+        
+        // Calculate checksum
+        let mut sum: u8 = 0;
+        for i in 0..16 {
+            sum = sum.wrapping_add(memory[mp_addr + i]);
+        }
+        memory[mp_addr + 10] = (256 - sum as u16) as u8;
+    }
 }
 
 impl Firmware for Bios {
@@ -754,6 +812,8 @@ impl Firmware for Bios {
             ));
         }
         
+        // =========== Phase 1: Initialize low memory structures ===========
+        
         // Initialize IVT at 0x0000
         self.init_ivt(memory);
         
@@ -761,9 +821,17 @@ impl Firmware for Bios {
         let bda_bytes = self.bda.to_bytes();
         memory[0x400..0x500].copy_from_slice(&bda_bytes);
         
-        // Initialize BIOS ROM at 0xF0000
+        // =========== Phase 2: Initialize EBDA (Extended BIOS Data Area) ===========
+        // EBDA typically at top of conventional memory (9FC00-9FFFF)
+        let ebda_segment = 0x9FC0u16;
+        // Write EBDA segment to BDA at offset 0x0E
+        memory[0x40E] = (ebda_segment & 0xFF) as u8;
+        memory[0x40F] = ((ebda_segment >> 8) & 0xFF) as u8;
+        
+        // =========== Phase 3: Initialize BIOS ROM area ===========
         self.init_bios_rom(memory);
         
+        // =========== Phase 4: Initialize video memory ===========
         // Clear VGA text buffer at 0xB8000
         let vga_base = 0xB8000;
         if vga_base + 0x1000 < memory.len() {
@@ -771,12 +839,24 @@ impl Firmware for Bios {
                 memory[vga_base + i * 2] = b' ';
                 memory[vga_base + i * 2 + 1] = 0x07;  // Light gray on black
             }
+            // Display POST message
+            let post_msg = b"NexaBIOS v1.0 - POST Complete";
+            for (i, &ch) in post_msg.iter().enumerate() {
+                memory[vga_base + i * 2] = ch;
+                memory[vga_base + i * 2 + 1] = 0x0F;  // Bright white
+            }
         }
+        
+        // =========== Phase 5: Setup ACPI tables (if space available) ===========
+        self.init_acpi_tables(memory);
+        
+        // =========== Phase 6: Setup MP tables for SMP ===========
+        self.init_mp_tables(memory);
         
         // Entry point is at FFFF:0000 (reset vector)
         // Which points to F000:E05B
         Ok(FirmwareLoadResult {
-            entry_point: 0xFFFF0,  // Reset vector
+            entry_point: 0xFFFF0,  // Reset vector  
             stack_pointer: 0x7C00, // Traditional stack location
             code_segment: 0xF000,
             real_mode: true,

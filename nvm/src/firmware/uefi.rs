@@ -448,6 +448,98 @@ impl UefiFirmware {
         &mut self.runtime_services
     }
     
+    /// Initialize 64-bit page tables for long mode
+    /// 
+    /// Creates identity mapping for first 4GB using 2MB pages
+    fn init_page_tables(&self, memory: &mut [u8]) -> FirmwareResult<()> {
+        // Page tables at 0x100000 (1MB)
+        let pml4_addr = 0x100000usize;
+        let pdpt_addr = 0x101000usize;
+        let pd_addr = 0x102000usize;
+        
+        // Ensure we have enough memory
+        if pd_addr + 0x4000 > memory.len() {
+            return Err(FirmwareError::InvalidMemory(
+                "Not enough memory for page tables".to_string()
+            ));
+        }
+        
+        // Clear page table area
+        for i in pml4_addr..(pd_addr + 0x4000) {
+            memory[i] = 0;
+        }
+        
+        // PML4[0] -> PDPT (present + writable)
+        let pml4e: u64 = pdpt_addr as u64 | 0x03;
+        let pml4e_bytes = pml4e.to_le_bytes();
+        memory[pml4_addr..pml4_addr + 8].copy_from_slice(&pml4e_bytes);
+        
+        // Setup PDPT entries pointing to PD tables
+        // Map first 4GB (4 PDPT entries, each covering 1GB)
+        for i in 0..4 {
+            let pdpte: u64 = (pd_addr + i * 0x1000) as u64 | 0x03;
+            let offset = pdpt_addr + i * 8;
+            let pdpte_bytes = pdpte.to_le_bytes();
+            memory[offset..offset + 8].copy_from_slice(&pdpte_bytes);
+        }
+        
+        // Setup PD entries with 2MB pages (PS bit set)
+        // Identity map first 4GB
+        for gb in 0..4 {
+            for i in 0..512 {
+                let phys_addr = (gb * 0x40000000) + (i * 0x200000); // 2MB pages
+                let pde: u64 = phys_addr as u64 | 0x83; // Present + Writable + PS (2MB page)
+                let offset = pd_addr + gb * 0x1000 + i * 8;
+                if offset + 8 <= memory.len() {
+                    let pde_bytes = pde.to_le_bytes();
+                    memory[offset..offset + 8].copy_from_slice(&pde_bytes);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Initialize GDT for 64-bit long mode
+    fn init_gdt(&self, memory: &mut [u8]) -> FirmwareResult<()> {
+        // GDT at 0x80000 (512KB)
+        let gdt_addr = 0x80000usize;
+        
+        if gdt_addr + 0x40 > memory.len() {
+            return Err(FirmwareError::InvalidMemory(
+                "Not enough memory for GDT".to_string()
+            ));
+        }
+        
+        // GDT entries (each 8 bytes)
+        let gdt_entries: &[u64] = &[
+            0x0000_0000_0000_0000,  // 0x00: Null descriptor
+            0x00AF_9A00_0000_FFFF,  // 0x08: 64-bit code segment (DPL=0)
+            0x00CF_9200_0000_FFFF,  // 0x10: 64-bit data segment (DPL=0)
+            0x00AF_FA00_0000_FFFF,  // 0x18: 64-bit code segment (DPL=3, user)
+            0x00CF_F200_0000_FFFF,  // 0x20: 64-bit data segment (DPL=3, user)
+            0x0000_0000_0000_0000,  // 0x28: TSS (low) - will be filled at runtime
+            0x0000_0000_0000_0000,  // 0x30: TSS (high)
+        ];
+        
+        for (i, &entry) in gdt_entries.iter().enumerate() {
+            let offset = gdt_addr + i * 8;
+            let entry_bytes = entry.to_le_bytes();
+            memory[offset..offset + 8].copy_from_slice(&entry_bytes);
+        }
+        
+        // GDT pointer structure at gdt_addr - 10
+        // (GDTR: 2-byte limit + 8-byte base)
+        let gdtr_addr = gdt_addr - 10;
+        let limit: u16 = (gdt_entries.len() * 8 - 1) as u16;
+        let limit_bytes = limit.to_le_bytes();
+        memory[gdtr_addr..gdtr_addr + 2].copy_from_slice(&limit_bytes);
+        let base_bytes = (gdt_addr as u64).to_le_bytes();
+        memory[gdtr_addr + 2..gdtr_addr + 10].copy_from_slice(&base_bytes);
+        
+        Ok(())
+    }
+    
     /// Write system table to memory
     fn write_system_table(&self, memory: &mut [u8], addr: usize) {
         if addr + std::mem::size_of::<EfiSystemTable>() > memory.len() {
@@ -515,19 +607,32 @@ impl Firmware for UefiFirmware {
             ));
         }
         
-        // Initialize UEFI tables
+        // =========== Phase 1: Setup 64-bit long mode page tables ===========
+        self.init_page_tables(memory)?;
+        
+        // =========== Phase 2: Setup GDT for 64-bit mode ===========
+        self.init_gdt(memory)?;
+        
+        // =========== Phase 3: Initialize UEFI tables ===========
         let system_table_addr = self.init_uefi_tables(memory)?;
         
-        // Create a minimal UEFI entry stub
-        // This would normally load the boot loader from disk
+        // =========== Phase 4: Create UEFI entry stub ===========
         let entry_addr = 0x80000u64;
         
-        // Simple 64-bit entry code
+        // 64-bit UEFI entry code with proper calling convention
+        // RCX = ImageHandle, RDX = SystemTable pointer
         let entry_code: &[u8] = &[
-            // Entry point - receives SystemTable in RDX
-            0x48, 0x89, 0xD3,             // MOV RBX, RDX (save system table)
+            // Entry point - UEFI application entry
+            0x48, 0x89, 0xD3,             // MOV RBX, RDX (save SystemTable)
+            0x48, 0x89, 0xCF,             // MOV RDI, RCX (save ImageHandle)
+            
+            // Display boot message via ConOut->OutputString (simplified)
+            // For now, just indicate successful entry
+            
             0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, // MOV RAX, 0 (EFI_SUCCESS)
-            // Normally we'd transfer to boot loader here
+            
+            // Wait for boot loader to be loaded
+            // In real UEFI, this would transfer to the EFI boot manager
             0xF4,                          // HLT
             0xEB, 0xFD,                    // JMP -3
         ];
@@ -538,16 +643,21 @@ impl Firmware for UefiFirmware {
                 .copy_from_slice(entry_code);
         }
         
-        // Clear framebuffer with blue (UEFI boot color)
-        let fb_base = 0xFD000000usize;
-        let fb_size = (self.config.fb_width * self.config.fb_height * 4) as usize;
-        if fb_base + fb_size <= memory.len() {
-            for i in 0..self.config.fb_width * self.config.fb_height {
-                let offset = fb_base + (i as usize) * 4;
-                memory[offset] = 0x80;     // B
-                memory[offset + 1] = 0x00; // G
-                memory[offset + 2] = 0x00; // R
-                memory[offset + 3] = 0xFF; // A
+        // =========== Phase 5: Initialize framebuffer ===========
+        // Note: Framebuffer at 0xFD000000 requires special MMIO handling
+        // For VGA text mode compatibility, also init VGA buffer
+        let vga_base = 0xB8000usize;
+        if vga_base + 0x1000 < memory.len() {
+            // Clear VGA text buffer
+            for i in 0..(80 * 25) {
+                memory[vga_base + i * 2] = b' ';
+                memory[vga_base + i * 2 + 1] = 0x1F;  // White on blue (UEFI style)
+            }
+            // Display UEFI boot message
+            let msg = b"NexaUEFI v1.0 Enterprise - Initializing...";
+            for (i, &ch) in msg.iter().enumerate() {
+                memory[vga_base + i * 2] = ch;
+                memory[vga_base + i * 2 + 1] = 0x1F;
             }
         }
         

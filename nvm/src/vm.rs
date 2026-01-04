@@ -463,65 +463,123 @@ impl VirtualMachine {
     
     /// Load firmware (BIOS or UEFI) into guest memory
     fn load_firmware(&self) {
-        use crate::firmware::{Firmware, FirmwareType, Bios, BiosConfig, UefiFirmware, UefiConfig};
-        
-        let memory_kb = (self.config.memory_mb * 1024) as u32;
+        use crate::firmware::{FirmwareManager, FirmwareType};
         
         // Get raw memory slice from physical memory
         let (ram_ptr, ram_size) = self.hal.memory.ram_region();
         let memory_slice = unsafe { std::slice::from_raw_parts_mut(ram_ptr, ram_size) };
         
-        match self.config.firmware_type {
-            FirmwareType::Bios => {
-                let bios_config = BiosConfig {
-                    memory_kb: core::cmp::min(memory_kb, 640),
-                    extended_memory_kb: memory_kb.saturating_sub(1024),
-                    num_hard_disks: 1,
-                    num_floppies: 0,
-                    boot_order: vec![0x80],
-                    serial_enabled: self.config.enable_serial,
-                    com_port: 0x3F8,
-                };
-                let mut bios = Bios::new(bios_config);
+        // Create and initialize firmware manager
+        let fw_manager = FirmwareManager::new(self.config.firmware_type);
+        if let Err(e) = fw_manager.initialize(self.config.memory_mb, self.config.cpus as u32) {
+            self.record_event(VmEvent::PortIo { 
+                port: 0x80, value: 0xFF, is_write: true // Fatal error
+            });
+            return;
+        }
+        
+        // Load firmware and get boot context
+        match fw_manager.load_firmware(memory_slice) {
+            Ok(context) => {
+                // Initialize CPU state based on boot context
+                self.initialize_cpu_for_boot(&context);
                 
-                // Load BIOS into memory
-                if let Ok(result) = bios.load(memory_slice) {
-                    // Set CPU entry point to BIOS reset vector
-                    if let Some(cpu) = self.hal.cpus.read().unwrap().first() {
-                        cpu.write_rip(result.entry_point);
-                    }
+                // Record POST code
+                let post_code = fw_manager.get_state().post_code;
+                self.record_event(VmEvent::PortIo { 
+                    port: 0x80,
+                    value: post_code as u32,
+                    is_write: true 
+                });
+                
+                // Display boot info on VGA
+                if let Some(ref vga) = self.vga_device {
+                    let mut vga_lock = vga.lock().unwrap();
+                    vga_lock.clear();
                     
-                    self.record_event(VmEvent::PortIo { 
-                        port: 0x80, // POST code port
-                        value: 0x01, 
-                        is_write: true 
-                    });
+                    match self.config.firmware_type {
+                        FirmwareType::Bios => {
+                            vga_lock.write_string("NexaBIOS v1.0 - Enterprise Edition\n");
+                            vga_lock.write_string("==================================\n\n");
+                            vga_lock.write_string(&format!("Memory: {} MB detected\n", self.config.memory_mb));
+                            vga_lock.write_string(&format!("CPUs: {} processor(s)\n", self.config.cpus));
+                            vga_lock.write_string("\nPOST Complete. Booting...\n\n");
+                        }
+                        FirmwareType::Uefi | FirmwareType::UefiSecure => {
+                            vga_lock.write_string("NexaUEFI v1.0 - Enterprise Edition\n");
+                            vga_lock.write_string("==================================\n\n");
+                            vga_lock.write_string(&format!("Memory: {} MB\n", self.config.memory_mb));
+                            vga_lock.write_string(&format!("CPUs: {} processor(s)\n", self.config.cpus));
+                            if matches!(self.config.firmware_type, FirmwareType::UefiSecure) {
+                                vga_lock.write_string("Secure Boot: ENABLED\n");
+                            }
+                            vga_lock.write_string("\nUEFI Initialization Complete.\n");
+                            vga_lock.write_string("Loading Boot Manager...\n\n");
+                        }
+                    }
                 }
             }
-            FirmwareType::Uefi | FirmwareType::UefiSecure => {
-                let uefi_config = UefiConfig {
-                    memory_mb: self.config.memory_mb as u64,
-                    secure_boot: matches!(self.config.firmware_type, FirmwareType::UefiSecure),
-                    boot_path: String::from("\\EFI\\BOOT\\BOOTX64.EFI"),
-                    fb_width: 800,
-                    fb_height: 600,
-                    variables: Default::default(),
-                };
-                let mut uefi = UefiFirmware::new(uefi_config);
+            Err(e) => {
+                // Boot failed
+                self.record_event(VmEvent::PortIo { 
+                    port: 0x80, value: 0xE0, is_write: true // Error
+                });
                 
-                // Load UEFI into memory
-                if let Ok(result) = uefi.load(memory_slice) {
-                    // Set CPU entry point to UEFI entry
-                    if let Some(cpu) = self.hal.cpus.read().unwrap().first() {
-                        cpu.write_rip(result.entry_point);
-                    }
-                    
-                    self.record_event(VmEvent::PortIo { 
-                        port: 0x80,
-                        value: 0x02, 
-                        is_write: true 
-                    });
+                if let Some(ref vga) = self.vga_device {
+                    let mut vga_lock = vga.lock().unwrap();
+                    vga_lock.write_string(&format!("\nFirmware Error: {}\n", e));
+                    vga_lock.write_string("System halted.\n");
                 }
+            }
+        }
+    }
+    
+    /// Initialize CPU state for firmware boot handoff
+    fn initialize_cpu_for_boot(&self, context: &crate::firmware::FirmwareBootContext) {
+        use crate::cpu::msr;
+        
+        let cpus = self.hal.cpus.read().unwrap();
+        if let Some(bsp) = cpus.first() {
+            // Set instruction pointer
+            bsp.write_rip(context.entry_point);
+            
+            // Set stack pointer
+            bsp.write_rsp(context.stack_pointer);
+            
+            // Set control registers
+            bsp.write_cr0(context.cr0);
+            bsp.write_cr3(context.cr3);
+            bsp.write_cr4(context.cr4);
+            
+            // Set EFER MSR
+            bsp.write_msr(msr::IA32_EFER, context.efer);
+            
+            // Set RFLAGS
+            bsp.write_rflags(context.rflags);
+            
+            // Set segment selectors via internal state
+            // For BIOS (real mode): CS=F000, IP points to reset vector
+            // For UEFI (long mode): CS=08, 64-bit flat memory model
+            if context.real_mode {
+                // Real mode initialization
+                // CS:IP = F000:FFF0 for reset vector
+                // Additional real-mode specific setup could go here
+                bsp.write_msr(msr::IA32_EFER, 0);  // No long mode
+            } else {
+                // Long mode initialization
+                // Setup for 64-bit execution
+                let efer = context.efer | (1 << 8) | (1 << 10);  // LME + LMA
+                bsp.write_msr(msr::IA32_EFER, efer);
+            }
+        }
+        
+        // Initialize APs (Application Processors) if SMP enabled
+        if self.config.cpus > 1 && self.config.enable_apic {
+            for (i, ap) in cpus.iter().enumerate().skip(1) {
+                // APs start in INIT state (halted) waiting for SIPI
+                ap.write_rip(0);
+                ap.write_rsp(0);
+                // APs will be woken by SIPI from BSP
             }
         }
     }

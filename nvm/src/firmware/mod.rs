@@ -34,10 +34,12 @@
 pub mod bios;
 pub mod uefi;
 pub mod font;
+pub mod manager;
 
 pub use bios::{Bios, BiosConfig, BiosServices};
 pub use uefi::{UefiFirmware, UefiConfig, UefiBootServices, UefiRuntimeServices};
 pub use font::{VgaFont, get_vga_font, FONT_WIDTH, FONT_HEIGHT};
+pub use manager::{FirmwareManager, FirmwareBootContext, FirmwareState, BootPhase};
 
 use crate::memory::PhysAddr;
 
