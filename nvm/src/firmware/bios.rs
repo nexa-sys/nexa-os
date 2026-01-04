@@ -652,6 +652,12 @@ impl Bios {
         self.set_ivt_entry(memory, 0x12, 0xF841, 0xF000);
         // INT 19h - Bootstrap at F000:E6F2
         self.set_ivt_entry(memory, 0x19, 0xE6F2, 0xF000);
+        
+        // IRQ handlers (PIC remaps IRQ0-7 to INT 08h-0Fh)
+        // INT 08h - Timer IRQ0 at F000:FEA5
+        self.set_ivt_entry(memory, 0x08, 0xFEA5, 0xF000);
+        // INT 09h - Keyboard IRQ1 at F000:E987 (critical for Ctrl+Alt+Del)
+        self.set_ivt_entry(memory, 0x09, 0xE987, 0xF000);
     }
     
     fn set_ivt_entry(&self, memory: &mut [u8], vector: usize, offset: u16, segment: u16) {
@@ -757,6 +763,117 @@ impl Bios {
                 0xEB, 0xFD,       // JMP -3 (loop on HLT)
             ];
             memory[entry..entry + code.len()].copy_from_slice(code);
+        }
+        
+        // INT 09h handler - Keyboard IRQ1 handler
+        // This is CRITICAL for Ctrl+Alt+Del handling
+        // BIOS Data Area: 0x0417 = keyboard flags (Ctrl=0x04, Alt=0x08)
+        // Scancode Set 1: Ctrl=0x1D, Alt=0x38, Delete=0x53
+        //
+        // Correct x86 flow:
+        // 1. Read scancode from port 0x60 (Set 1, since translation enabled)
+        // 2. Track modifier key state in BDA 0x0417
+        // 3. If Ctrl+Alt+Del detected, write 0xFE to port 0x64 (reset command)
+        // 4. Send EOI to PIC
+        let int09_handler = 0xFE987;
+        if int09_handler + 100 < memory.len() {
+            // Carefully calculated jump offsets - verified byte by byte
+            // Layout (all offsets in hex):
+            //   00-05: prologue (6 bytes)
+            //   06-09: read scancode (4 bytes)  
+            //   0A-0D: test release (4 bytes)
+            //   0E-23: release handling (22 bytes)
+            //   24-42: key press handling (31 bytes)
+            //   43-49: reset code (7 bytes)
+            //   4A-50: eoi + iret (7 bytes)
+            //
+            // Jump calculations (rel8 is signed, calculated from NEXT instruction):
+            //   JZ at 0x0C: target 0x24, next=0x0E, rel=0x24-0x0E=0x16 ✓
+            //   JNE at 0x12: target 0x19, next=0x14, rel=0x19-0x14=0x05 ✓
+            //   JNE at 0x1B: target 0x4A, next=0x1D, rel=0x4A-0x1D=0x2D ✓
+            //   JMP at 0x22: target 0x4A, next=0x24, rel=0x4A-0x24=0x26 ✓
+            //   JNE at 0x26: target 0x2D, next=0x28, rel=0x2D-0x28=0x05 ✓
+            //   JNE at 0x2F: target 0x36, next=0x31, rel=0x36-0x31=0x05 ✓
+            //   JNE at 0x38: target 0x4A, next=0x3A, rel=0x4A-0x3A=0x10 ✓
+            //   JNE at 0x41: target 0x4A, next=0x43, rel=0x4A-0x43=0x07 ✓
+            let code: &[u8] = &[
+                // ========== Prologue (offset 0x00-0x05) ==========
+                0x50,             // 00: PUSH AX
+                0x1E,             // 01: PUSH DS
+                0x31, 0xC0,       // 02-03: XOR AX, AX
+                0x8E, 0xD8,       // 04-05: MOV DS, AX (DS = 0 for BDA access)
+                
+                // ========== Read scancode (offset 0x06-0x09) ==========
+                0xE4, 0x60,       // 06-07: IN AL, 60h
+                0x88, 0xC4,       // 08-09: MOV AH, AL (save original scancode)
+                
+                // ========== Check release bit (offset 0x0A-0x0D) ==========
+                0xA8, 0x80,       // 0A-0B: TEST AL, 80h (check bit 7)
+                0x74, 0x16,       // 0C-0D: JZ key_press (target 0x24, rel=0x16)
+                
+                // ========== Key Release path (offset 0x0E-0x23) ==========
+                0x24, 0x7F,       // 0E-0F: AND AL, 7Fh (mask off release bit)
+                
+                // Check Ctrl release
+                0x3C, 0x1D,       // 10-11: CMP AL, 1Dh
+                0x75, 0x05,       // 12-13: JNE check_alt_release (target 0x19, rel=5)
+                0x80, 0x26, 0x17, 0x04, 0xFB, // 14-18: AND BYTE [0417h], FBh (clear Ctrl)
+                
+                // check_alt_release:
+                0x3C, 0x38,       // 19-1A: CMP AL, 38h (Alt?)
+                0x75, 0x2D,       // 1B-1C: JNE eoi (target 0x4A, rel=0x2D)
+                0x80, 0x26, 0x17, 0x04, 0xF7, // 1D-21: AND BYTE [0417h], F7h (clear Alt)
+                0xEB, 0x26,       // 22-23: JMP eoi (target 0x4A, rel=0x26)
+                
+                // ========== Key Press path (offset 0x24-0x42) ==========
+                // key_press:
+                // Check Ctrl press
+                0x3C, 0x1D,       // 24-25: CMP AL, 1Dh
+                0x75, 0x05,       // 26-27: JNE check_alt_press (target 0x2D, rel=5)
+                0x80, 0x0E, 0x17, 0x04, 0x04, // 28-2C: OR BYTE [0417h], 04h (set Ctrl)
+                
+                // check_alt_press:
+                0x3C, 0x38,       // 2D-2E: CMP AL, 38h (Alt?)
+                0x75, 0x05,       // 2F-30: JNE check_del (target 0x36, rel=5)
+                0x80, 0x0E, 0x17, 0x04, 0x08, // 31-35: OR BYTE [0417h], 08h (set Alt)
+                
+                // check_del:
+                0x3C, 0x53,       // 36-37: CMP AL, 53h (Delete?)
+                0x75, 0x10,       // 38-39: JNE eoi (target 0x4A, rel=0x10)
+                
+                // Delete pressed - check if Ctrl+Alt are held
+                0xA0, 0x17, 0x04, // 3A-3C: MOV AL, [0417h]
+                0x24, 0x0C,       // 3D-3E: AND AL, 0Ch (mask Ctrl+Alt bits)
+                0x3C, 0x0C,       // 3F-40: CMP AL, 0Ch (both bits set?)
+                0x75, 0x07,       // 41-42: JNE eoi (target 0x4A, rel=7)
+                
+                // ========== Ctrl+Alt+Del detected! Trigger reset ==========
+                // reset:
+                0xB0, 0xFE,       // 43-44: MOV AL, FEh
+                0xE6, 0x64,       // 45-46: OUT 64h, AL (keyboard controller reset cmd)
+                0xF4,             // 47: HLT (wait for reset)
+                0xEB, 0xFD,       // 48-49: JMP -3 (loop at HLT if reset slow)
+                
+                // ========== EOI and return (offset 0x4A-0x50) ==========
+                // eoi:
+                0xB0, 0x20,       // 4A-4B: MOV AL, 20h
+                0xE6, 0x20,       // 4C-4D: OUT 20h, AL (send EOI to master PIC)
+                0x1F,             // 4E: POP DS
+                0x58,             // 4F: POP AX
+                0xCF,             // 50: IRET
+            ];
+            memory[int09_handler..int09_handler + code.len()].copy_from_slice(code);
+        }
+        
+        // INT 08h handler - Timer IRQ0 (minimal, just EOI)
+        let int08_handler = 0xFFEA5;
+        if int08_handler + 8 < memory.len() {
+            let code: &[u8] = &[
+                0xB0, 0x20,       // MOV AL, 20h
+                0xE6, 0x20,       // OUT 20h, AL (EOI)
+                0xCF,             // IRET
+            ];
+            memory[int08_handler..int08_handler + code.len()].copy_from_slice(code);
         }
         
         // INT 19h handler - load boot sector

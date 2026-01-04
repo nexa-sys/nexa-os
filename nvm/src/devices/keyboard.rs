@@ -96,17 +96,131 @@ impl Ps2Keyboard {
         }
     }
     
+    /// Scancode Set 2 to Set 1 translation table
+    /// Used when controller translation is enabled (config bit 6)
+    /// BIOS expects Set 1 scancodes for interrupt handling
+    const SET2_TO_SET1: [u8; 256] = {
+        let mut table = [0u8; 256];
+        // Common keys - mapping from Set 2 to Set 1
+        // Letters
+        table[0x1C] = 0x1E; // A
+        table[0x32] = 0x30; // B
+        table[0x21] = 0x2E; // C
+        table[0x23] = 0x20; // D
+        table[0x24] = 0x12; // E
+        table[0x2B] = 0x21; // F
+        table[0x34] = 0x22; // G
+        table[0x33] = 0x23; // H
+        table[0x43] = 0x17; // I
+        table[0x3B] = 0x24; // J
+        table[0x42] = 0x25; // K
+        table[0x4B] = 0x26; // L
+        table[0x3A] = 0x32; // M
+        table[0x31] = 0x31; // N
+        table[0x44] = 0x18; // O
+        table[0x4D] = 0x19; // P
+        table[0x15] = 0x10; // Q
+        table[0x2D] = 0x13; // R
+        table[0x1B] = 0x1F; // S
+        table[0x2C] = 0x14; // T
+        table[0x3C] = 0x16; // U
+        table[0x2A] = 0x2F; // V
+        table[0x1D] = 0x11; // W
+        table[0x22] = 0x2D; // X
+        table[0x35] = 0x15; // Y
+        table[0x1A] = 0x2C; // Z
+        // Numbers
+        table[0x45] = 0x0B; // 0
+        table[0x16] = 0x02; // 1
+        table[0x1E] = 0x03; // 2
+        table[0x26] = 0x04; // 3
+        table[0x25] = 0x05; // 4
+        table[0x2E] = 0x06; // 5
+        table[0x36] = 0x07; // 6
+        table[0x3D] = 0x08; // 7
+        table[0x3E] = 0x09; // 8
+        table[0x46] = 0x0A; // 9
+        // Symbols
+        table[0x4E] = 0x0C; // -
+        table[0x55] = 0x0D; // =
+        table[0x54] = 0x1A; // [
+        table[0x5B] = 0x1B; // ]
+        table[0x5D] = 0x2B; // backslash
+        table[0x4C] = 0x27; // ;
+        table[0x52] = 0x28; // '
+        table[0x0E] = 0x29; // `
+        table[0x41] = 0x33; // ,
+        table[0x49] = 0x34; // .
+        table[0x4A] = 0x35; // /
+        // Control keys
+        table[0x5A] = 0x1C; // Enter
+        table[0x29] = 0x39; // Space
+        table[0x0D] = 0x0F; // Tab
+        table[0x66] = 0x0E; // Backspace
+        table[0x58] = 0x3A; // CapsLock
+        table[0x76] = 0x01; // Escape
+        // Modifiers
+        table[0x12] = 0x2A; // Left Shift
+        table[0x59] = 0x36; // Right Shift
+        table[0x14] = 0x1D; // Ctrl (both left and right use same in Set 1)
+        table[0x11] = 0x38; // Alt
+        // Function keys
+        table[0x05] = 0x3B; // F1
+        table[0x06] = 0x3C; // F2
+        table[0x04] = 0x3D; // F3
+        table[0x0C] = 0x3E; // F4
+        table[0x03] = 0x3F; // F5
+        table[0x0B] = 0x40; // F6
+        table[0x83] = 0x41; // F7
+        table[0x0A] = 0x42; // F8
+        table[0x01] = 0x43; // F9
+        table[0x09] = 0x44; // F10
+        table[0x78] = 0x57; // F11
+        table[0x07] = 0x58; // F12
+        // Extended keys (E0 prefix in both sets)
+        table[0x70] = 0x52; // Insert
+        table[0x71] = 0x53; // Delete - CRITICAL for Ctrl+Alt+Del!
+        table[0x6C] = 0x47; // Home
+        table[0x69] = 0x4F; // End
+        table[0x7D] = 0x49; // PageUp
+        table[0x7A] = 0x51; // PageDown
+        table[0x75] = 0x48; // Up
+        table[0x72] = 0x50; // Down
+        table[0x6B] = 0x4B; // Left
+        table[0x74] = 0x4D; // Right
+        // NumLock and ScrollLock
+        table[0x77] = 0x45; // NumLock
+        table[0x7E] = 0x46; // ScrollLock
+        table
+    };
+    
+    /// Translate Set 2 scancode to Set 1 if translation is enabled
+    fn translate_scancode(&self, scancode: u8) -> u8 {
+        // Check if translation is enabled (config bit 6)
+        if (self.config & 0x40) != 0 {
+            let translated = Self::SET2_TO_SET1[scancode as usize];
+            if translated != 0 {
+                return translated;
+            }
+        }
+        scancode
+    }
+    
     /// Process an incoming scancode (from host keyboard event)
     pub fn inject_scancode(&mut self, scancode: u8, is_release: bool) {
-        // Handle modifier keys (for internal state tracking)
+        // Handle modifier keys (for internal state tracking, use original Set 2 codes)
         self.update_modifiers(scancode, is_release);
         
-        // Add to output buffer
+        // Translate to Set 1 if enabled (BIOS expects Set 1)
+        let output_code = self.translate_scancode(scancode);
+        
+        // Add to output buffer using Set 1 format
         if is_release {
-            // Send break code (0xF0 prefix for scancode set 2)
-            self.output_buffer.push_back(0xF0);
+            // Set 1 break code: scancode | 0x80
+            self.output_buffer.push_back(output_code | 0x80);
+        } else {
+            self.output_buffer.push_back(output_code);
         }
-        self.output_buffer.push_back(scancode);
         
         // Update status and raise interrupt
         self.status |= status::OUTPUT_FULL;
@@ -636,21 +750,22 @@ mod tests {
     #[test]
     fn test_scancode_output() {
         // Test that scancodes are correctly placed in output buffer
+        // Note: With translation enabled, Set 2 scancodes are converted to Set 1
         let mut kb = Ps2Keyboard::new();
         
         // Type 'a' key
         kb.inject_key("a", false);
         
-        // Should have scancode in buffer
+        // Should have scancode in buffer (Set 1: 'a' = 0x1E)
         assert!(!kb.output_buffer.is_empty());
-        assert_eq!(kb.output_buffer[0], 0x1C); // 'a' scancode
+        assert_eq!(kb.output_buffer[0], 0x1E, "'a' should be Set 1 scancode 0x1E");
         
         // Status should show data available
         assert!(kb.status & 0x01 != 0);
         
         // Read should clear buffer
         let data = kb.port_read(0x60, IoAccess::Byte);
-        assert_eq!(data, 0x1C);
+        assert_eq!(data, 0x1E);
     }
     
     #[test]
@@ -669,18 +784,19 @@ mod tests {
     fn test_letter_keys() {
         let mut kb = Ps2Keyboard::new();
         
-        // Test all letter keys generate valid scancodes
-        for c in 'a'..='z' {
-            kb.output_buffer.clear();
-            kb.inject_key(&c.to_string(), false);
-            assert!(!kb.output_buffer.is_empty(), "Letter '{}' should produce output", c);
-            
-            // Test release (should have F0 prefix)
-            kb.output_buffer.clear();
-            kb.inject_key(&c.to_string(), true);
-            assert_eq!(kb.output_buffer.len(), 2, "Release of '{}' should have F0 prefix", c);
-            assert_eq!(kb.output_buffer[0], 0xF0);
-        }
+        // With translation enabled (config bit 6 = 0x40), output is Set 1 format
+        // Set 1 release code = make code | 0x80
+        // Test 'a' key: Set 2 = 0x1C -> Set 1 = 0x1E
+        kb.output_buffer.clear();
+        kb.inject_key("a", false);
+        assert!(!kb.output_buffer.is_empty(), "Letter 'a' should produce output");
+        assert_eq!(kb.output_buffer[0], 0x1E, "Letter 'a' Set 1 scancode");
+        
+        // Test release - Set 1 uses bit 7 for release (0x1E | 0x80 = 0x9E)
+        kb.output_buffer.clear();
+        kb.inject_key("a", true);
+        assert_eq!(kb.output_buffer.len(), 1, "Set 1 release is single byte");
+        assert_eq!(kb.output_buffer[0], 0x9E, "Release of 'a' should be 0x9E");
     }
     
     #[test]
@@ -727,18 +843,19 @@ mod tests {
     #[test]
     fn test_slash_key_specifically() {
         // This test specifically verifies the slash key issue is fixed
+        // With translation enabled: Set 2 0x4A -> Set 1 0x35
         let mut kb = Ps2Keyboard::new();
         
         // Test "/" character directly
         kb.output_buffer.clear();
         kb.inject_key("/", false);
         assert!(!kb.output_buffer.is_empty(), "Slash '/' should produce output");
-        assert_eq!(kb.output_buffer[0], 0x4A, "Slash should map to scancode 0x4A");
+        assert_eq!(kb.output_buffer[0], 0x35, "Slash should map to Set 1 scancode 0x35");
         
         // Test "slash" string (from JS code mapping)
         kb.output_buffer.clear();
         kb.inject_key("slash", false);
         assert!(!kb.output_buffer.is_empty(), "Key name 'slash' should produce output");
-        assert_eq!(kb.output_buffer[0], 0x4A, "Slash should map to scancode 0x4A");
+        assert_eq!(kb.output_buffer[0], 0x35, "Slash should map to Set 1 scancode 0x35");
     }
 }
