@@ -12,15 +12,20 @@ const connected = ref(false)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const consoleMessages = ref<string[]>([])
+const keyboardCaptured = ref(false)
 
 // Console display
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const consoleContainerRef = ref<HTMLDivElement | null>(null)
 let ws: WebSocket | null = null
 let reconnectAttempts = 0
 const maxReconnectAttempts = 3
 let canvasCtx: CanvasRenderingContext2D | null = null
 let displayWidth = 800
 let displayHeight = 600
+
+// Track pressed keys to handle stuck keys on focus loss
+const pressedKeys = new Set<string>()
 
 onMounted(async () => {
   // Fetch VM info
@@ -39,6 +44,14 @@ onMounted(async () => {
   }
 
   connectWebSocket()
+  
+  // Add global keyboard listener for better capture
+  document.addEventListener('keydown', globalKeyDown, true)
+  document.addEventListener('keyup', globalKeyUp, true)
+  
+  // Handle focus loss to release stuck keys
+  window.addEventListener('blur', handleWindowBlur)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 function initCanvas(width: number, height: number) {
@@ -159,21 +172,70 @@ function connectWebSocket() {
 }
 
 onUnmounted(() => {
+  // Remove global listeners
+  document.removeEventListener('keydown', globalKeyDown, true)
+  document.removeEventListener('keyup', globalKeyUp, true)
+  window.removeEventListener('blur', handleWindowBlur)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  
+  // Release all pressed keys before closing
+  releaseAllKeys()
+  
   if (ws) {
     ws.close()
   }
 })
 
+// Release all currently pressed keys (prevent stuck keys)
+function releaseAllKeys() {
+  if (!ws || !connected.value) return
+  
+  for (const code of pressedKeys) {
+    ws.send(JSON.stringify({
+      type: 'key',
+      action: 'up',
+      code: code,
+      key: ''
+    }))
+  }
+  pressedKeys.clear()
+}
+
+// Handle window losing focus
+function handleWindowBlur() {
+  releaseAllKeys()
+  keyboardCaptured.value = false
+}
+
+// Handle tab visibility change
+function handleVisibilityChange() {
+  if (document.hidden) {
+    releaseAllKeys()
+    keyboardCaptured.value = false
+  }
+}
+
+// Global keyboard handlers for reliable capture
+function globalKeyDown(e: KeyboardEvent) {
+  // Only capture when canvas is focused or keyboard is captured
+  if (!keyboardCaptured.value && document.activeElement !== canvasRef.value) {
+    return
+  }
+  
+  handleKeyDown(e)
+}
+
+function globalKeyUp(e: KeyboardEvent) {
+  // Always handle key up to prevent stuck keys
+  if (pressedKeys.has(e.code)) {
+    handleKeyUp(e)
+  }
+}
+
 function sendCtrlAltDel() {
   if (ws && connected.value) {
     // Send Ctrl+Alt+Del key sequence
     ws.send(JSON.stringify({ type: 'key', keys: ['ctrl', 'alt', 'delete'] }))
-  }
-}
-
-function requestFrame() {
-  if (ws && connected.value) {
-    ws.send(JSON.stringify({ type: 'request_frame' }))
   }
 }
 
@@ -188,35 +250,62 @@ function toggleFullscreen() {
   }
 }
 
-// Handle keyboard events
+// Handle keyboard events - Enterprise-grade keyboard capture like ESXi
 function handleKeyDown(e: KeyboardEvent) {
   if (!ws || !connected.value) return
   
+  // Track pressed keys
+  pressedKeys.add(e.code)
+  
+  // Send key event with full information for backend mapping
   ws.send(JSON.stringify({
     type: 'key',
     action: 'down',
     code: e.code,
     key: e.key,
+    keyCode: e.keyCode,
     ctrlKey: e.ctrlKey,
     altKey: e.altKey,
-    shiftKey: e.shiftKey
+    shiftKey: e.shiftKey,
+    metaKey: e.metaKey,
+    location: e.location
   }))
   
-  // Prevent default for most keys when console is focused
-  if (e.key !== 'F11' && e.key !== 'F12') {
-    e.preventDefault()
-  }
+  // Prevent default for ALL keys when capturing to VM
+  // This ensures keys like /, \, Tab, etc. don't trigger browser actions
+  e.preventDefault()
+  e.stopPropagation()
 }
 
 function handleKeyUp(e: KeyboardEvent) {
   if (!ws || !connected.value) return
   
+  // Remove from tracked keys
+  pressedKeys.delete(e.code)
+  
   ws.send(JSON.stringify({
     type: 'key',
     action: 'up',
     code: e.code,
-    key: e.key
+    key: e.key,
+    keyCode: e.keyCode,
+    location: e.location
   }))
+  
+  e.preventDefault()
+  e.stopPropagation()
+}
+
+// Enable keyboard capture when clicking on console
+function enableKeyboardCapture() {
+  keyboardCaptured.value = true
+  canvasRef.value?.focus()
+}
+
+// Disable keyboard capture (e.g., when clicking outside)
+function disableKeyboardCapture() {
+  keyboardCaptured.value = false
+  releaseAllKeys()
 }
 </script>
 
@@ -262,7 +351,35 @@ function handleKeyUp(e: KeyboardEvent) {
     </div>
 
     <!-- Console Area -->
-    <div id="console-container" class="flex-1 flex items-center justify-center bg-black">
+    <div 
+      id="console-container" 
+      ref="consoleContainerRef"
+      class="flex-1 flex items-center justify-center bg-black relative"
+      @click="enableKeyboardCapture"
+    >
+      <!-- Keyboard capture indicator -->
+      <div 
+        v-if="connected && !loading && !error"
+        class="absolute top-2 right-2 z-10 flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs"
+        :class="keyboardCaptured ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+            d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/>
+        </svg>
+        <span>{{ keyboardCaptured ? 'Keyboard captured' : 'Click to capture keyboard' }}</span>
+        <button 
+          v-if="keyboardCaptured"
+          class="ml-2 hover:text-white"
+          @click.stop="disableKeyboardCapture"
+          title="Release keyboard (Ctrl+Alt+G)"
+        >
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      
       <!-- Loading -->
       <div v-if="loading" class="text-center">
         <svg class="animate-spin w-12 h-12 mx-auto text-accent-500" fill="none" viewBox="0 0 24 24">
@@ -290,10 +407,13 @@ function handleKeyUp(e: KeyboardEvent) {
       <canvas
         v-else
         ref="canvasRef"
-        class="max-w-full max-h-full border border-dark-600"
+        class="max-w-full max-h-full border border-dark-600 outline-none cursor-default"
+        :class="{ 'ring-2 ring-accent-500': keyboardCaptured }"
         tabindex="0"
-        @keydown="handleKeyDown"
-        @keyup="handleKeyUp"
+        @mousedown="enableKeyboardCapture"
+        @focus="keyboardCaptured = true"
+        @blur="keyboardCaptured = false"
+        @contextmenu.prevent
       />
     </div>
   </div>
