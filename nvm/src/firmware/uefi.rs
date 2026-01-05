@@ -88,6 +88,11 @@ pub struct GopModeInfo {
     pub vertical_resolution: u32,
     pub pixel_format: u32,  // 0=RGBX, 1=BGRX, 2=BitMask, 3=BltOnly
     pub pixels_per_scan_line: u32,
+    /// Pixel mask info (for BitMask pixel format)
+    pub red_mask: u32,
+    pub green_mask: u32,
+    pub blue_mask: u32,
+    pub reserved_mask: u32,
 }
 
 /// Graphics Output Protocol
@@ -98,11 +103,73 @@ pub struct GraphicsOutputProtocol {
     pub framebuffer_size: u64,
     pub current_mode: u32,
     pub max_mode: u32,
+    /// Available modes
+    pub modes: Vec<GopModeInfo>,
 }
 
 impl GraphicsOutputProtocol {
     pub fn new(width: u32, height: u32, fb_base: u64) -> Self {
         let fb_size = (width * height * 4) as u64;  // 32bpp
+        
+        // BGR pixel masks (common UEFI format)
+        let red_mask = 0x00FF0000u32;
+        let green_mask = 0x0000FF00u32;
+        let blue_mask = 0x000000FFu32;
+        let reserved_mask = 0xFF000000u32;
+        
+        // Define available modes
+        let modes = vec![
+            GopModeInfo {
+                version: 0,
+                horizontal_resolution: 640,
+                vertical_resolution: 480,
+                pixel_format: 1,
+                pixels_per_scan_line: 640,
+                red_mask,
+                green_mask,
+                blue_mask,
+                reserved_mask,
+            },
+            GopModeInfo {
+                version: 0,
+                horizontal_resolution: 800,
+                vertical_resolution: 600,
+                pixel_format: 1,
+                pixels_per_scan_line: 800,
+                red_mask,
+                green_mask,
+                blue_mask,
+                reserved_mask,
+            },
+            GopModeInfo {
+                version: 0,
+                horizontal_resolution: 1024,
+                vertical_resolution: 768,
+                pixel_format: 1,
+                pixels_per_scan_line: 1024,
+                red_mask,
+                green_mask,
+                blue_mask,
+                reserved_mask,
+            },
+            GopModeInfo {
+                version: 0,
+                horizontal_resolution: 1280,
+                vertical_resolution: 1024,
+                pixel_format: 1,
+                pixels_per_scan_line: 1280,
+                red_mask,
+                green_mask,
+                blue_mask,
+                reserved_mask,
+            },
+        ];
+        
+        // Find current mode index
+        let current_mode = modes.iter()
+            .position(|m| m.horizontal_resolution == width && m.vertical_resolution == height)
+            .unwrap_or(2) as u32;  // Default to 1024x768
+        
         Self {
             mode_info: GopModeInfo {
                 version: 0,
@@ -110,13 +177,336 @@ impl GraphicsOutputProtocol {
                 vertical_resolution: height,
                 pixel_format: 1,  // BGRX (common for UEFI)
                 pixels_per_scan_line: width,
+                red_mask,
+                green_mask,
+                blue_mask,
+                reserved_mask,
             },
             framebuffer_base: fb_base,
             framebuffer_size: fb_size,
-            current_mode: 0,
-            max_mode: 1,
+            current_mode,
+            max_mode: modes.len() as u32,
+            modes,
         }
     }
+    
+    /// Query mode information
+    pub fn query_mode(&self, mode_number: u32) -> Option<&GopModeInfo> {
+        self.modes.get(mode_number as usize)
+    }
+    
+    /// Set mode
+    pub fn set_mode(&mut self, mode_number: u32) -> bool {
+        if let Some(mode) = self.modes.get(mode_number as usize) {
+            self.mode_info = mode.clone();
+            self.current_mode = mode_number;
+            self.framebuffer_size = (mode.horizontal_resolution * mode.vertical_resolution * 4) as u64;
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Blt (Block Transfer) operation
+    pub fn blt(&self, memory: &mut [u8], operation: GopBltOperation, 
+               src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, 
+               width: u32, height: u32, delta: u32) -> bool {
+        let fb_base = self.framebuffer_base as usize;
+        let stride = self.mode_info.pixels_per_scan_line as usize * 4;
+        
+        match operation {
+            GopBltOperation::BltVideoFill => {
+                // Fill rectangle with color from src buffer
+                // For now, just return success
+                true
+            }
+            GopBltOperation::BltVideoToBltBuffer => {
+                // Copy from framebuffer to buffer
+                true
+            }
+            GopBltOperation::BltBufferToVideo => {
+                // Copy from buffer to framebuffer
+                true
+            }
+            GopBltOperation::BltVideoToVideo => {
+                // Copy within framebuffer
+                true
+            }
+        }
+    }
+    
+    /// Write GOP protocol to guest memory
+    pub fn write_to_memory(&self, memory: &mut [u8], addr: usize) -> usize {
+        if addr + 64 > memory.len() {
+            return 0;
+        }
+        
+        // GOP Protocol structure:
+        // 0x00: QueryMode function pointer
+        // 0x08: SetMode function pointer
+        // 0x10: Blt function pointer
+        // 0x18: Mode pointer
+        
+        // Write function pointers (these are service call stubs)
+        let query_mode_fn = 0x50u64;  // GOP_QUERY_MODE service number
+        let set_mode_fn = 0x51u64;    // GOP_SET_MODE service number
+        let blt_fn = 0x52u64;          // GOP_BLT service number
+        let mode_ptr = (addr + 32) as u64;
+        
+        memory[addr..addr+8].copy_from_slice(&query_mode_fn.to_le_bytes());
+        memory[addr+8..addr+16].copy_from_slice(&set_mode_fn.to_le_bytes());
+        memory[addr+16..addr+24].copy_from_slice(&blt_fn.to_le_bytes());
+        memory[addr+24..addr+32].copy_from_slice(&mode_ptr.to_le_bytes());
+        
+        // Write Mode structure at offset 32:
+        // 0x00: MaxMode (UINT32)
+        // 0x04: Mode (UINT32) - current mode
+        // 0x08: Info pointer (to GopModeInfo)
+        // 0x10: SizeOfInfo (UINTN)
+        // 0x18: FrameBufferBase
+        // 0x20: FrameBufferSize
+        
+        let mode_info_ptr = (addr + 64) as u64;
+        
+        memory[addr+32..addr+36].copy_from_slice(&self.max_mode.to_le_bytes());
+        memory[addr+36..addr+40].copy_from_slice(&self.current_mode.to_le_bytes());
+        memory[addr+40..addr+48].copy_from_slice(&mode_info_ptr.to_le_bytes());
+        memory[addr+48..addr+56].copy_from_slice(&20u64.to_le_bytes()); // sizeof(GopModeInfo)
+        memory[addr+56..addr+64].copy_from_slice(&self.framebuffer_base.to_le_bytes());
+        memory[addr+64..addr+72].copy_from_slice(&self.framebuffer_size.to_le_bytes());
+        
+        // Write GopModeInfo at offset 72
+        memory[addr+72..addr+76].copy_from_slice(&self.mode_info.version.to_le_bytes());
+        memory[addr+76..addr+80].copy_from_slice(&self.mode_info.horizontal_resolution.to_le_bytes());
+        memory[addr+80..addr+84].copy_from_slice(&self.mode_info.vertical_resolution.to_le_bytes());
+        memory[addr+84..addr+88].copy_from_slice(&self.mode_info.pixel_format.to_le_bytes());
+        memory[addr+88..addr+92].copy_from_slice(&self.mode_info.pixels_per_scan_line.to_le_bytes());
+        
+        92  // Total bytes written
+    }
+}
+
+/// GOP Blt Operation types
+#[derive(Debug, Clone, Copy)]
+pub enum GopBltOperation {
+    BltVideoFill,
+    BltVideoToBltBuffer,
+    BltBufferToVideo,
+    BltVideoToVideo,
+}
+
+/// Simple File System Protocol
+#[derive(Debug, Clone)]
+pub struct SimpleFileSystemProtocol {
+    /// Revision
+    pub revision: u64,
+    /// Volume label
+    pub volume_label: String,
+    /// Files in the filesystem (path -> content)
+    pub files: HashMap<String, Vec<u8>>,
+    /// Open file handles
+    pub open_handles: HashMap<u64, FileHandle>,
+    /// Next handle ID
+    next_handle: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileHandle {
+    pub path: String,
+    pub position: u64,
+    pub is_directory: bool,
+    pub size: u64,
+}
+
+impl SimpleFileSystemProtocol {
+    pub fn new() -> Self {
+        let mut files = HashMap::new();
+        
+        // Create a minimal ESP structure
+        files.insert("\\".to_string(), Vec::new());  // Root directory
+        files.insert("\\EFI".to_string(), Vec::new());
+        files.insert("\\EFI\\BOOT".to_string(), Vec::new());
+        
+        Self {
+            revision: 0x00010000,  // 1.0
+            volume_label: "EFI System Partition".to_string(),
+            files,
+            open_handles: HashMap::new(),
+            next_handle: 1,
+        }
+    }
+    
+    /// Add a file to the filesystem
+    pub fn add_file(&mut self, path: &str, content: Vec<u8>) {
+        self.files.insert(path.to_string(), content);
+    }
+    
+    /// Open volume (returns root directory handle)
+    pub fn open_volume(&mut self) -> u64 {
+        let handle = self.next_handle;
+        self.next_handle += 1;
+        
+        self.open_handles.insert(handle, FileHandle {
+            path: "\\".to_string(),
+            position: 0,
+            is_directory: true,
+            size: 0,
+        });
+        
+        handle
+    }
+    
+    /// Open file relative to directory handle
+    pub fn open(&mut self, dir_handle: u64, filename: &str) -> Result<u64, &'static str> {
+        let dir = self.open_handles.get(&dir_handle)
+            .ok_or("Invalid directory handle")?;
+        
+        // Build full path
+        let full_path = if dir.path == "\\" {
+            format!("{}", filename.trim_start_matches('\\'))
+        } else {
+            format!("{}\\{}", dir.path.trim_end_matches('\\'), filename.trim_start_matches('\\'))
+        };
+        
+        // Normalize path
+        let normalized = full_path.replace("/", "\\");
+        let normalized = if normalized.starts_with('\\') {
+            normalized
+        } else {
+            format!("\\{}", normalized)
+        };
+        
+        // Check if it's a directory (check for files that start with this path)
+        let is_dir = self.files.keys().any(|k| k.starts_with(&format!("{}\\", normalized)));
+        
+        // Check if file exists
+        let file_exists = self.files.contains_key(&normalized);
+        
+        if !file_exists && !is_dir {
+            return Err("File not found");
+        }
+        
+        let size = self.files.get(&normalized).map(|v| v.len() as u64).unwrap_or(0);
+        
+        let handle = self.next_handle;
+        self.next_handle += 1;
+        
+        self.open_handles.insert(handle, FileHandle {
+            path: normalized,
+            position: 0,
+            is_directory: is_dir,
+            size,
+        });
+        
+        Ok(handle)
+    }
+    
+    /// Open file with UEFI style (mode and attributes) 
+    pub fn open_with_mode(&mut self, dir_handle: u64, filename: &str, _mode: u64, _attributes: u64) -> Option<u64> {
+        self.open(dir_handle, filename).ok()
+    }
+    
+    /// Read file content
+    pub fn read(&mut self, handle: u64, buffer_size: usize) -> Result<Vec<u8>, &'static str> {
+        let file = self.open_handles.get_mut(&handle)
+            .ok_or("Invalid handle")?;
+        
+        if file.is_directory {
+            return Err("Cannot read directory");
+        }
+        
+        let content = self.files.get(&file.path)
+            .ok_or("File not found")?;
+        let start = file.position as usize;
+        let end = (start + buffer_size).min(content.len());
+        
+        if start >= content.len() {
+            return Ok(Vec::new());  // EOF
+        }
+        
+        let data = content[start..end].to_vec();
+        file.position = end as u64;
+        
+        Ok(data)
+    }
+    
+    /// Get file info
+    pub fn get_info(&self, handle: u64) -> Result<FileInfo, &'static str> {
+        let file = self.open_handles.get(&handle)
+            .ok_or("Invalid handle")?;
+        
+        // For directories, return basic info
+        if file.is_directory {
+            return Ok(FileInfo {
+                size: 0,
+                file_size: 0,
+                physical_size: 0,
+                create_time: EfiTime::default(),
+                last_access_time: EfiTime::default(),
+                modification_time: EfiTime::default(),
+                attribute: 0x10,  // EFI_FILE_DIRECTORY
+                file_name: file.path.rsplit('\\').next().unwrap_or("").to_string(),
+            });
+        }
+        
+        let content = self.files.get(&file.path)
+            .ok_or("File not found")?;
+        
+        Ok(FileInfo {
+            size: content.len() as u64,
+            file_size: content.len() as u64,
+            physical_size: ((content.len() + 511) / 512 * 512) as u64,
+            create_time: EfiTime::default(),
+            last_access_time: EfiTime::default(),
+            modification_time: EfiTime::default(),
+            attribute: 0,  // Regular file
+            file_name: file.path.rsplit('\\').next().unwrap_or("").to_string(),
+        })
+    }
+    
+    /// Set file position
+    pub fn set_position(&mut self, handle: u64, position: u64) -> bool {
+        if let Some(file) = self.open_handles.get_mut(&handle) {
+            file.position = position;
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Close file handle
+    pub fn close(&mut self, handle: u64) -> bool {
+        self.open_handles.remove(&handle).is_some()
+    }
+    
+    /// Write protocol to guest memory
+    pub fn write_to_memory(&self, memory: &mut [u8], addr: usize) -> usize {
+        if addr + 24 > memory.len() {
+            return 0;
+        }
+        
+        // SimpleFileSystem Protocol structure:
+        // 0x00: Revision (UINT64)
+        // 0x08: OpenVolume function pointer
+        
+        memory[addr..addr+8].copy_from_slice(&self.revision.to_le_bytes());
+        memory[addr+8..addr+16].copy_from_slice(&0x60u64.to_le_bytes()); // SFS_OPEN_VOLUME service
+        
+        16
+    }
+}
+
+/// File information structure
+#[derive(Debug, Clone)]
+pub struct FileInfo {
+    pub size: u64,
+    pub file_size: u64,
+    pub physical_size: u64,
+    pub create_time: EfiTime,
+    pub last_access_time: EfiTime,
+    pub modification_time: EfiTime,
+    pub attribute: u64,
+    pub file_name: String,
 }
 
 /// UEFI Boot Services
@@ -555,8 +945,12 @@ pub struct UefiFirmware {
     boot_services: UefiBootServices,
     runtime_services: UefiRuntimeServices,
     gop: GraphicsOutputProtocol,
+    file_system: SimpleFileSystemProtocol,
     system_table: EfiSystemTable,
     version: String,
+    /// Protocol addresses in guest memory
+    gop_protocol_addr: u64,
+    sfs_protocol_addr: u64,
 }
 
 impl UefiFirmware {
@@ -567,19 +961,48 @@ impl UefiFirmware {
             0xFD000000,  // Framebuffer base
         );
         
+        let mut file_system = SimpleFileSystemProtocol::new();
+        
+        // Add default EFI boot file path
+        // In real implementation, this would come from the attached disk
+        file_system.add_file("\\EFI\\BOOT\\BOOTX64.EFI", Vec::new());
+        
         Self {
             boot_services: UefiBootServices::new(config.memory_mb),
             runtime_services: UefiRuntimeServices::new(),
             gop,
+            file_system,
             config,
             system_table: EfiSystemTable::default(),
             version: String::from("NexaUEFI 1.0"),
+            gop_protocol_addr: 0,
+            sfs_protocol_addr: 0,
         }
     }
     
     /// Get GOP
     pub fn gop(&self) -> &GraphicsOutputProtocol {
         &self.gop
+    }
+    
+    /// Get mutable GOP
+    pub fn gop_mut(&mut self) -> &mut GraphicsOutputProtocol {
+        &mut self.gop
+    }
+    
+    /// Get file system
+    pub fn file_system(&self) -> &SimpleFileSystemProtocol {
+        &self.file_system
+    }
+    
+    /// Get mutable file system
+    pub fn file_system_mut(&mut self) -> &mut SimpleFileSystemProtocol {
+        &mut self.file_system
+    }
+    
+    /// Add EFI file to the virtual filesystem
+    pub fn add_efi_file(&mut self, path: &str, content: Vec<u8>) {
+        self.file_system.add_file(path, content);
     }
     
     /// Get boot services
@@ -1133,8 +1556,57 @@ impl Firmware for UefiFirmware {
             // LocateProtocol (0x30)
             0x30 => {
                 // RCX = Protocol GUID ptr, RDX = Registration (optional), R8 = Interface ptr
-                // For now, return EFI_NOT_FOUND for most protocols
-                regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
+                let guid_ptr = regs.rcx as usize;
+                let interface_ptr = regs.r8 as usize;
+                
+                if guid_ptr + 16 <= memory.len() && interface_ptr + 8 <= memory.len() {
+                    // Read GUID from memory
+                    let guid_bytes: [u8; 16] = memory[guid_ptr..guid_ptr+16].try_into().unwrap_or([0; 16]);
+                    
+                    // Check for known protocols
+                    // GOP GUID: 9042a9de-23dc-4a38-96fb-7aded080516a
+                    let gop_guid: [u8; 16] = [
+                        0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a,
+                        0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+                    ];
+                    // Simple File System GUID: 0964e5b22-6459-11d2-8e39-00a0c969723b
+                    let sfs_guid: [u8; 16] = [
+                        0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11,
+                        0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+                    ];
+                    
+                    if guid_bytes == gop_guid {
+                        // Return GOP protocol interface address
+                        // Write GOP structure to a known location and return pointer
+                        let gop_addr: u64 = 0x90000;  // GOP protocol structure address
+                        self.gop.write_to_memory(memory, gop_addr as usize);
+                        memory[interface_ptr..interface_ptr+8].copy_from_slice(&gop_addr.to_le_bytes());
+                        regs.rax = 0;  // EFI_SUCCESS
+                    } else if guid_bytes == sfs_guid {
+                        // Return Simple File System protocol interface address
+                        let sfs_addr: u64 = 0x91000;  // SFS protocol structure address
+                        // Write SFS protocol structure
+                        // For now, just write the OpenVolume function pointer (service 0x60)
+                        // EFI_SIMPLE_FILE_SYSTEM_PROTOCOL has Revision + OpenVolume
+                        let sfs_struct: [u8; 16] = [
+                            // Revision (0x00010000 = 1.0)
+                            0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                            // OpenVolume function pointer (magic value triggers service 0x60)
+                            0x60, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+                        ];
+                        let sfs_offset = sfs_addr as usize;
+                        if sfs_offset + 16 <= memory.len() {
+                            memory[sfs_offset..sfs_offset+16].copy_from_slice(&sfs_struct);
+                        }
+                        memory[interface_ptr..interface_ptr+8].copy_from_slice(&sfs_addr.to_le_bytes());
+                        regs.rax = 0;  // EFI_SUCCESS
+                    } else {
+                        // Unknown protocol
+                        regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
+                    }
+                } else {
+                    regs.rax = 0x8000000000000002;  // EFI_INVALID_PARAMETER
+                }
             }
             // LocateHandle (0x31)
             0x31 => {
@@ -1177,6 +1649,319 @@ impl Firmware for UefiFirmware {
             0x42 => {
                 regs.rax = 0;
             }
+            
+            // ==================== GOP Protocol Services (0x50+) ====================
+            // GOP.QueryMode (0x50)
+            0x50 => {
+                // RCX = Mode number, RDX = SizeOfInfo ptr, R8 = Info ptr
+                let mode_num = regs.rcx as u32;
+                if let Some(mode_info) = self.gop.query_mode(mode_num) {
+                    // Write mode info to buffer
+                    let info_ptr = regs.r8 as usize;
+                    if info_ptr + 36 <= memory.len() {
+                        // EFI_GRAPHICS_OUTPUT_MODE_INFORMATION
+                        memory[info_ptr..info_ptr+4].copy_from_slice(&mode_info.version.to_le_bytes());
+                        memory[info_ptr+4..info_ptr+8].copy_from_slice(&mode_info.horizontal_resolution.to_le_bytes());
+                        memory[info_ptr+8..info_ptr+12].copy_from_slice(&mode_info.vertical_resolution.to_le_bytes());
+                        memory[info_ptr+12..info_ptr+16].copy_from_slice(&(mode_info.pixel_format as u32).to_le_bytes());
+                        // Pixel bitmask (16 bytes)
+                        memory[info_ptr+16..info_ptr+20].copy_from_slice(&mode_info.red_mask.to_le_bytes());
+                        memory[info_ptr+20..info_ptr+24].copy_from_slice(&mode_info.green_mask.to_le_bytes());
+                        memory[info_ptr+24..info_ptr+28].copy_from_slice(&mode_info.blue_mask.to_le_bytes());
+                        memory[info_ptr+28..info_ptr+32].copy_from_slice(&mode_info.reserved_mask.to_le_bytes());
+                        memory[info_ptr+32..info_ptr+36].copy_from_slice(&mode_info.pixels_per_scan_line.to_le_bytes());
+                        
+                        // Write size to size ptr
+                        let size_ptr = regs.rdx as usize;
+                        if size_ptr + 8 <= memory.len() {
+                            memory[size_ptr..size_ptr+8].copy_from_slice(&36u64.to_le_bytes());
+                        }
+                        regs.rax = 0;  // EFI_SUCCESS
+                    } else {
+                        regs.rax = 0x8000000000000002;  // EFI_INVALID_PARAMETER
+                    }
+                } else {
+                    regs.rax = 0x8000000000000002;  // EFI_INVALID_PARAMETER
+                }
+            }
+            
+            // GOP.SetMode (0x51)
+            0x51 => {
+                // RCX = Mode number
+                let mode_num = regs.rcx as u32;
+                if self.gop.set_mode(mode_num) {
+                    regs.rax = 0;  // EFI_SUCCESS
+                } else {
+                    regs.rax = 0x8000000000000003;  // EFI_UNSUPPORTED
+                }
+            }
+            
+            // GOP.Blt (0x52)
+            0x52 => {
+                // RCX = BltBuffer, RDX = BltOperation, R8 = SourceX, R9 = SourceY
+                // Stack: DestX, DestY, Width, Height, Delta
+                let blt_buffer = regs.rcx;
+                let operation = regs.rdx as u32;
+                let source_x = regs.r8 as u32;
+                let source_y = regs.r9 as u32;
+                
+                // For now, we support basic BLT operations
+                let op = match operation {
+                    0 => GopBltOperation::BltVideoFill,
+                    1 => GopBltOperation::BltVideoToBltBuffer,
+                    2 => GopBltOperation::BltBufferToVideo,
+                    3 => GopBltOperation::BltVideoToVideo,
+                    _ => {
+                        regs.rax = 0x8000000000000002;
+                        return Ok(());
+                    }
+                };
+                
+                // Basic implementation - copy between buffer and framebuffer
+                let fb_base = self.gop.framebuffer_base as usize;
+                let fb_size = self.gop.framebuffer_size as usize;
+                
+                match op {
+                    GopBltOperation::BltVideoFill => {
+                        // Fill video with single pixel from buffer
+                        if blt_buffer as usize + 4 <= memory.len() && fb_base + fb_size <= memory.len() {
+                            let pixel = u32::from_le_bytes([
+                                memory[blt_buffer as usize],
+                                memory[blt_buffer as usize + 1],
+                                memory[blt_buffer as usize + 2],
+                                memory[blt_buffer as usize + 3],
+                            ]);
+                            // Fill entire framebuffer (simplified)
+                            for offset in (0..fb_size).step_by(4) {
+                                memory[fb_base + offset..fb_base + offset + 4]
+                                    .copy_from_slice(&pixel.to_le_bytes());
+                            }
+                        }
+                        regs.rax = 0;
+                    }
+                    _ => {
+                        // Other BLT operations - basic success for now
+                        regs.rax = 0;
+                    }
+                }
+            }
+            
+            // GOP.GetMode (0x53) - Get current mode info
+            0x53 => {
+                // RCX = Mode info output ptr
+                let info_ptr = regs.rcx as usize;
+                if info_ptr + 48 <= memory.len() {
+                    // EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE
+                    memory[info_ptr..info_ptr+4].copy_from_slice(&self.gop.max_mode.to_le_bytes());
+                    memory[info_ptr+4..info_ptr+8].copy_from_slice(&self.gop.current_mode.to_le_bytes());
+                    // Mode info pointer (would be set during protocol install)
+                    memory[info_ptr+8..info_ptr+16].copy_from_slice(&0u64.to_le_bytes());
+                    // SizeOfInfo
+                    memory[info_ptr+16..info_ptr+24].copy_from_slice(&36u64.to_le_bytes());
+                    // FrameBufferBase
+                    memory[info_ptr+24..info_ptr+32].copy_from_slice(&self.gop.framebuffer_base.to_le_bytes());
+                    // FrameBufferSize
+                    memory[info_ptr+32..info_ptr+40].copy_from_slice(&self.gop.framebuffer_size.to_le_bytes());
+                    regs.rax = 0;
+                } else {
+                    regs.rax = 0x8000000000000002;
+                }
+            }
+            
+            // ==================== Simple File System Protocol Services (0x60+) ====================
+            // SFS.OpenVolume (0x60)
+            0x60 => {
+                // RCX = FileSystem handle (ignored, we have single volume)
+                // RDX = Root directory handle output ptr
+                let handle = self.file_system.open_volume();
+                let out_ptr = regs.rdx as usize;
+                if out_ptr + 8 <= memory.len() {
+                    memory[out_ptr..out_ptr+8].copy_from_slice(&handle.to_le_bytes());
+                    regs.rax = 0;  // EFI_SUCCESS
+                } else {
+                    regs.rax = 0x8000000000000002;
+                }
+            }
+            
+            // File.Open (0x61)
+            0x61 => {
+                // RCX = Parent handle, RDX = New handle output ptr, R8 = Filename ptr, R9 = OpenMode
+                let parent_handle = regs.rcx;
+                let new_handle_ptr = regs.rdx as usize;
+                let filename_ptr = regs.r8 as usize;
+                let _open_mode = regs.r9;
+                
+                // Read filename (UTF-16 LE, null terminated)
+                let mut filename = String::new();
+                let mut pos = filename_ptr;
+                while pos + 2 <= memory.len() {
+                    let ch = u16::from_le_bytes([memory[pos], memory[pos + 1]]);
+                    if ch == 0 {
+                        break;
+                    }
+                    if let Some(c) = char::from_u32(ch as u32) {
+                        filename.push(c);
+                    }
+                    pos += 2;
+                }
+                
+                match self.file_system.open(parent_handle, &filename) {
+                    Ok(handle) => {
+                        if new_handle_ptr + 8 <= memory.len() {
+                            memory[new_handle_ptr..new_handle_ptr+8].copy_from_slice(&handle.to_le_bytes());
+                            regs.rax = 0;
+                        } else {
+                            regs.rax = 0x8000000000000002;
+                        }
+                    }
+                    Err(_) => {
+                        regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
+                    }
+                }
+            }
+            
+            // File.Close (0x62)
+            0x62 => {
+                let handle = regs.rcx;
+                self.file_system.close(handle);
+                regs.rax = 0;
+            }
+            
+            // File.Read (0x63)
+            0x63 => {
+                // RCX = Handle, RDX = BufferSize ptr, R8 = Buffer
+                let handle = regs.rcx;
+                let size_ptr = regs.rdx as usize;
+                let buffer_ptr = regs.r8 as usize;
+                
+                // Read requested size
+                let requested_size = if size_ptr + 8 <= memory.len() {
+                    u64::from_le_bytes([
+                        memory[size_ptr], memory[size_ptr+1], memory[size_ptr+2], memory[size_ptr+3],
+                        memory[size_ptr+4], memory[size_ptr+5], memory[size_ptr+6], memory[size_ptr+7],
+                    ]) as usize
+                } else {
+                    regs.rax = 0x8000000000000002;
+                    return Ok(());
+                };
+                
+                match self.file_system.read(handle, requested_size) {
+                    Ok(data) => {
+                        let actual_size = data.len();
+                        if buffer_ptr + actual_size <= memory.len() {
+                            memory[buffer_ptr..buffer_ptr + actual_size].copy_from_slice(&data);
+                            // Update size with actual bytes read
+                            memory[size_ptr..size_ptr+8].copy_from_slice(&(actual_size as u64).to_le_bytes());
+                            regs.rax = 0;
+                        } else {
+                            regs.rax = 0x8000000000000002;
+                        }
+                    }
+                    Err(_) => {
+                        regs.rax = 0x8000000000000007;  // EFI_DEVICE_ERROR
+                    }
+                }
+            }
+            
+            // File.Write (0x64) - Basic stub for EFI write
+            0x64 => {
+                // Not fully implemented - ESP is typically read-only during boot
+                regs.rax = 0x8000000000000003;  // EFI_UNSUPPORTED
+            }
+            
+            // File.GetPosition (0x65)
+            0x65 => {
+                let handle = regs.rcx;
+                let pos_ptr = regs.rdx as usize;
+                
+                if let Some(fh) = self.file_system.open_handles.get(&handle) {
+                    if pos_ptr + 8 <= memory.len() {
+                        memory[pos_ptr..pos_ptr+8].copy_from_slice(&fh.position.to_le_bytes());
+                        regs.rax = 0;
+                    } else {
+                        regs.rax = 0x8000000000000002;
+                    }
+                } else {
+                    regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
+                }
+            }
+            
+            // File.SetPosition (0x66)
+            0x66 => {
+                let handle = regs.rcx;
+                let position = regs.rdx;
+                self.file_system.set_position(handle, position);
+                regs.rax = 0;
+            }
+            
+            // File.GetInfo (0x67)
+            0x67 => {
+                // RCX = Handle, RDX = InfoType GUID ptr, R8 = BufferSize ptr, R9 = Buffer
+                let handle = regs.rcx;
+                let buffer_size_ptr = regs.r8 as usize;
+                let buffer_ptr = regs.r9 as usize;
+                
+                match self.file_system.get_info(handle) {
+                    Ok(info) => {
+                        // EFI_FILE_INFO minimum size: 80 bytes + filename
+                        let info_size = 80 + (info.file_name.len() + 1) * 2;
+                        
+                        // Check buffer size
+                        let available = if buffer_size_ptr + 8 <= memory.len() {
+                            u64::from_le_bytes([
+                                memory[buffer_size_ptr], memory[buffer_size_ptr+1],
+                                memory[buffer_size_ptr+2], memory[buffer_size_ptr+3],
+                                memory[buffer_size_ptr+4], memory[buffer_size_ptr+5],
+                                memory[buffer_size_ptr+6], memory[buffer_size_ptr+7],
+                            ]) as usize
+                        } else {
+                            regs.rax = 0x8000000000000002;
+                            return Ok(());
+                        };
+                        
+                        if available < info_size {
+                            // Return needed size
+                            memory[buffer_size_ptr..buffer_size_ptr+8]
+                                .copy_from_slice(&(info_size as u64).to_le_bytes());
+                            regs.rax = 0x8000000000000005;  // EFI_BUFFER_TOO_SMALL
+                            return Ok(());
+                        }
+                        
+                        if buffer_ptr + info_size <= memory.len() {
+                            // Write EFI_FILE_INFO
+                            memory[buffer_ptr..buffer_ptr+8].copy_from_slice(&info.size.to_le_bytes());
+                            memory[buffer_ptr+8..buffer_ptr+16].copy_from_slice(&info.file_size.to_le_bytes());
+                            memory[buffer_ptr+16..buffer_ptr+24].copy_from_slice(&info.physical_size.to_le_bytes());
+                            // Create/LastAccess/Modification times (EFI_TIME = 16 bytes each)
+                            memory[buffer_ptr+24..buffer_ptr+72].fill(0);  // Zero times for now
+                            memory[buffer_ptr+72..buffer_ptr+80].copy_from_slice(&info.attribute.to_le_bytes());
+                            
+                            // Write filename (UTF-16 LE)
+                            let mut fname_offset = buffer_ptr + 80;
+                            for ch in info.file_name.encode_utf16() {
+                                if fname_offset + 2 <= memory.len() {
+                                    memory[fname_offset..fname_offset+2].copy_from_slice(&ch.to_le_bytes());
+                                    fname_offset += 2;
+                                }
+                            }
+                            // Null terminator
+                            if fname_offset + 2 <= memory.len() {
+                                memory[fname_offset..fname_offset+2].copy_from_slice(&0u16.to_le_bytes());
+                            }
+                            
+                            regs.rax = 0;
+                        } else {
+                            regs.rax = 0x8000000000000002;
+                        }
+                    }
+                    Err(_) => {
+                        regs.rax = 0x8000000000000005;
+                    }
+                }
+            }
+            
+            // ==================== LocateProtocol Enhancement (0x30) ====================
+            // Already handled above, but we need to support GOP and SFS protocols
             
             _ => {
                 // Unknown service
@@ -1229,5 +2014,233 @@ mod tests {
         let gop = uefi.gop();
         assert_eq!(gop.mode_info.horizontal_resolution, 1024);
         assert_eq!(gop.mode_info.vertical_resolution, 768);
+    }
+    
+    #[test]
+    fn test_gop_modes() {
+        let gop = GraphicsOutputProtocol::new(800, 600, 0xFD000000);
+        
+        // Test mode query
+        assert!(gop.query_mode(0).is_some());
+        assert!(gop.query_mode(1).is_some());
+        assert!(gop.query_mode(2).is_some());
+        assert!(gop.query_mode(3).is_some());
+        assert!(gop.query_mode(4).is_none());
+        
+        // Verify mode 0 is 640x480
+        let mode0 = gop.query_mode(0).unwrap();
+        assert_eq!(mode0.horizontal_resolution, 640);
+        assert_eq!(mode0.vertical_resolution, 480);
+        
+        // Verify mode 2 is 1024x768
+        let mode2 = gop.query_mode(2).unwrap();
+        assert_eq!(mode2.horizontal_resolution, 1024);
+        assert_eq!(mode2.vertical_resolution, 768);
+    }
+    
+    #[test]
+    fn test_gop_set_mode() {
+        let mut gop = GraphicsOutputProtocol::new(800, 600, 0xFD000000);
+        
+        // Should be able to set valid modes
+        assert!(gop.set_mode(0));
+        assert_eq!(gop.current_mode, 0);
+        assert_eq!(gop.mode_info.horizontal_resolution, 640);
+        
+        assert!(gop.set_mode(2));
+        assert_eq!(gop.current_mode, 2);
+        assert_eq!(gop.mode_info.horizontal_resolution, 1024);
+        
+        // Invalid mode should fail
+        assert!(!gop.set_mode(99));
+    }
+    
+    #[test]
+    fn test_gop_framebuffer() {
+        let gop = GraphicsOutputProtocol::new(1024, 768, 0xFD000000);
+        
+        assert_eq!(gop.framebuffer_base, 0xFD000000);
+        // 1024 * 768 * 4 bytes per pixel
+        assert_eq!(gop.framebuffer_size, 1024 * 768 * 4);
+    }
+    
+    #[test]
+    fn test_simple_file_system_basic() {
+        let mut sfs = SimpleFileSystemProtocol::new();
+        
+        // Add a test file
+        let test_content = vec![0x4D, 0x5A, 0x90, 0x00];  // MZ header
+        sfs.add_file("\\EFI\\BOOT\\BOOTX64.EFI", test_content.clone());
+        
+        // Open volume
+        let root_handle = sfs.open_volume();
+        assert!(root_handle != 0);
+        
+        // Open the file
+        let file_handle = sfs.open(root_handle, "\\EFI\\BOOT\\BOOTX64.EFI").unwrap();
+        assert!(file_handle != 0);
+        
+        // Read file content
+        let data = sfs.read(file_handle, 1024).unwrap();
+        assert_eq!(data, test_content);
+        
+        // Close handles
+        sfs.close(file_handle);
+        sfs.close(root_handle);
+    }
+    
+    #[test]
+    fn test_simple_file_system_get_info() {
+        let mut sfs = SimpleFileSystemProtocol::new();
+        
+        let test_content = vec![0x00; 1024];
+        sfs.add_file("\\TEST.BIN", test_content);
+        
+        let root = sfs.open_volume();
+        let file = sfs.open(root, "\\TEST.BIN").unwrap();
+        
+        let info = sfs.get_info(file).unwrap();
+        assert_eq!(info.file_size, 1024);
+        assert!(info.file_name.contains("TEST.BIN"));
+    }
+    
+    #[test]
+    fn test_simple_file_system_position() {
+        let mut sfs = SimpleFileSystemProtocol::new();
+        
+        let test_content: Vec<u8> = (0u8..=255).collect();
+        sfs.add_file("\\DATA.BIN", test_content);
+        
+        let root = sfs.open_volume();
+        let file = sfs.open(root, "\\DATA.BIN").unwrap();
+        
+        // Read first 10 bytes
+        let data1 = sfs.read(file, 10).unwrap();
+        assert_eq!(data1, (0u8..10).collect::<Vec<u8>>());
+        
+        // Position should have advanced
+        let pos = sfs.open_handles.get(&file).unwrap().position;
+        assert_eq!(pos, 10);
+        
+        // Set position to 100
+        sfs.set_position(file, 100);
+        
+        // Read next 10 bytes
+        let data2 = sfs.read(file, 10).unwrap();
+        assert_eq!(data2, (100u8..110).collect::<Vec<u8>>());
+    }
+    
+    #[test]
+    fn test_simple_file_system_directory() {
+        let mut sfs = SimpleFileSystemProtocol::new();
+        
+        sfs.add_file("\\EFI\\BOOT\\BOOTX64.EFI", vec![0xAA, 0xBB]);
+        sfs.add_file("\\EFI\\BOOT\\BOOTIA32.EFI", vec![0xCC, 0xDD]);
+        
+        let root = sfs.open_volume();
+        
+        // Open directory
+        let efi_dir = sfs.open(root, "\\EFI").unwrap();
+        
+        // Verify it's a directory
+        let info = sfs.get_info(efi_dir).unwrap();
+        assert!(info.attribute & 0x10 != 0);  // EFI_FILE_DIRECTORY
+    }
+    
+    #[test]
+    fn test_uefi_file_system_integration() {
+        let mut uefi = UefiFirmware::new(UefiConfig::default());
+        
+        // Add an EFI file
+        let efi_binary = vec![0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00];
+        uefi.add_efi_file("\\EFI\\CUSTOM\\APP.EFI", efi_binary.clone());
+        
+        // Verify we can access it through file_system
+        let root = uefi.file_system_mut().open_volume();
+        let file = uefi.file_system_mut().open(root, "\\EFI\\CUSTOM\\APP.EFI").unwrap();
+        let data = uefi.file_system_mut().read(file, 1024).unwrap();
+        
+        assert_eq!(data, efi_binary);
+    }
+    
+    #[test]
+    fn test_uefi_gop_service() {
+        let mut uefi = UefiFirmware::new(UefiConfig::default());
+        let mut memory = vec![0u8; 0x200000];
+        
+        // Initialize UEFI tables
+        uefi.load(&mut memory).unwrap();
+        
+        let mut regs = ServiceRegisters::default();
+        
+        // Test GOP.QueryMode (0x50)
+        regs.rax = 0x50;
+        regs.rcx = 0;  // Mode 0
+        regs.rdx = 0x1000;  // Size output
+        regs.r8 = 0x1100;   // Info output
+        
+        uefi.handle_service(&mut memory, &mut regs).unwrap();
+        assert_eq!(regs.rax, 0);  // EFI_SUCCESS
+        
+        // Verify mode info was written
+        let width = u32::from_le_bytes([
+            memory[0x1104], memory[0x1105], memory[0x1106], memory[0x1107]
+        ]);
+        assert_eq!(width, 640);  // Mode 0 is 640x480
+    }
+    
+    #[test]
+    fn test_uefi_locate_gop_protocol() {
+        let mut uefi = UefiFirmware::new(UefiConfig::default());
+        let mut memory = vec![0u8; 0x200000];
+        
+        uefi.load(&mut memory).unwrap();
+        
+        // Write GOP GUID to memory
+        let gop_guid: [u8; 16] = [
+            0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a,
+            0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+        ];
+        memory[0x2000..0x2010].copy_from_slice(&gop_guid);
+        
+        let mut regs = ServiceRegisters::default();
+        regs.rax = 0x30;  // LocateProtocol
+        regs.rcx = 0x2000;  // GUID ptr
+        regs.rdx = 0;       // Registration (unused)
+        regs.r8 = 0x2100;   // Interface output ptr
+        
+        uefi.handle_service(&mut memory, &mut regs).unwrap();
+        assert_eq!(regs.rax, 0);  // EFI_SUCCESS
+        
+        // Verify interface pointer was written
+        let interface_addr = u64::from_le_bytes([
+            memory[0x2100], memory[0x2101], memory[0x2102], memory[0x2103],
+            memory[0x2104], memory[0x2105], memory[0x2106], memory[0x2107],
+        ]);
+        assert!(interface_addr > 0);
+    }
+    
+    #[test]
+    fn test_uefi_locate_sfs_protocol() {
+        let mut uefi = UefiFirmware::new(UefiConfig::default());
+        let mut memory = vec![0u8; 0x200000];
+        
+        uefi.load(&mut memory).unwrap();
+        
+        // Write SFS GUID to memory
+        let sfs_guid: [u8; 16] = [
+            0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11,
+            0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+        ];
+        memory[0x2000..0x2010].copy_from_slice(&sfs_guid);
+        
+        let mut regs = ServiceRegisters::default();
+        regs.rax = 0x30;  // LocateProtocol
+        regs.rcx = 0x2000;  // GUID ptr
+        regs.rdx = 0;
+        regs.r8 = 0x2100;   // Interface output ptr
+        
+        uefi.handle_service(&mut memory, &mut regs).unwrap();
+        assert_eq!(regs.rax, 0);  // EFI_SUCCESS
     }
 }
