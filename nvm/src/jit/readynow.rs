@@ -128,33 +128,14 @@ impl ReadyNowCache {
     }
     
     fn serialize_profile(&self, profile: &ProfileDb) -> JitResult<Vec<u8>> {
-        let mut data = Vec::new();
-        
-        // Header
-        data.extend_from_slice(PROFILE_MAGIC);
-        data.extend_from_slice(&READYNOW_VERSION.to_le_bytes());
-        
-        // Profile data (delegated to ProfileDb)
-        data.extend_from_slice(&profile.serialize());
-        
-        Ok(data)
+        // ProfileDb::serialize() already includes NVMP magic and version
+        // No additional header needed here
+        Ok(profile.serialize())
     }
     
     fn deserialize_profile(&self, data: &[u8]) -> JitResult<ProfileDb> {
-        if data.len() < 8 {
-            return Err(JitError::InvalidFormat);
-        }
-        
-        if &data[0..4] != PROFILE_MAGIC {
-            return Err(JitError::InvalidFormat);
-        }
-        
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        
-        // Profile format is forward/backward compatible
-        // Version differences handled in ProfileDb::deserialize
-        
-        ProfileDb::deserialize(&data[8..])
+        // ProfileDb::deserialize handles its own header validation
+        ProfileDb::deserialize(data)
             .ok_or(JitError::InvalidFormat)
     }
     
@@ -1051,6 +1032,72 @@ impl ReadyNowCache {
         Ok(())
     }
     
+    /// Save native code from BlockPersistInfo (from CodeCache)
+    /// 
+    /// This is the preferred method for saving native code as it uses
+    /// the actual compiled blocks from CodeCache, not the metadata-only
+    /// blocks from JitEngine.
+    pub fn save_native_from_persist(&self, blocks: &[(u64, super::cache::BlockPersistInfo)]) -> JitResult<()> {
+        let path = self.native_path();
+        let mut data = Vec::new();
+        
+        // Header with version info for compatibility check on load
+        data.extend_from_slice(NATIVE_MAGIC);
+        data.extend_from_slice(&self.jit_version.to_le_bytes());
+        data.push(self.arch.to_u8());
+        data.extend_from_slice(&[0, 0, 0]); // Padding for alignment
+        
+        // Block count
+        data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+        
+        log::debug!("[ReadyNow!] Saving {} native code blocks", blocks.len());
+        
+        // Each block header is 40 bytes:
+        // - guest_rip: 8 bytes
+        // - guest_size: 4 bytes
+        // - host_size: 4 bytes
+        // - tier: 1 byte
+        // - guest_instrs: 4 bytes
+        // - guest_checksum: 8 bytes
+        // - exec_count: 8 bytes
+        // - padding: 3 bytes
+        // Followed by native_code (host_size bytes)
+        for (rip, block) in blocks {
+            // Guest RIP (8 bytes)
+            data.extend_from_slice(&rip.to_le_bytes());
+            // Guest size (4 bytes)
+            data.extend_from_slice(&block.guest_size.to_le_bytes());
+            // Host size (4 bytes)
+            data.extend_from_slice(&block.host_size.to_le_bytes());
+            // Tier (1 byte)
+            data.push(match block.tier {
+                CompileTier::Interpreter => 0,
+                CompileTier::S1 => 1,
+                CompileTier::S2 => 2,
+            });
+            // Guest instruction count (4 bytes)
+            data.extend_from_slice(&block.guest_instrs.to_le_bytes());
+            // Guest checksum (8 bytes)
+            data.extend_from_slice(&block.guest_checksum.to_le_bytes());
+            // Execution count (8 bytes) - preserves hotness info
+            data.extend_from_slice(&block.exec_count.to_le_bytes());
+            // Padding for alignment (3 bytes)
+            data.extend_from_slice(&[0, 0, 0]);
+            
+            // Native code bytes
+            data.extend_from_slice(&block.native_code);
+        }
+        
+        let mut file = File::create(&path)
+            .map_err(|_| JitError::IoError)?;
+        file.write_all(&data)
+            .map_err(|_| JitError::IoError)?;
+        
+        log::info!("[ReadyNow!] Saved {} bytes to {}", data.len(), path);
+        
+        Ok(())
+    }
+    
     /// Load compiled native code
     /// Returns None if version mismatch (must recompile)
     pub fn load_native(&self) -> JitResult<Option<HashMap<u64, NativeBlockInfo>>> {
@@ -1132,8 +1179,9 @@ impl ReadyNowCache {
         let mut offset = 16;
         let mut blocks = HashMap::new();
         
+        // Each block header is 40 bytes (see save_native_from_persist for layout)
         for _ in 0..block_count {
-            if offset + 32 > data.len() {
+            if offset + 40 > data.len() {
                 break;
             }
             
@@ -1147,8 +1195,10 @@ impl ReadyNowCache {
             };
             let guest_instrs = u32::from_le_bytes(data[offset+17..offset+21].try_into().unwrap());
             let guest_checksum = u64::from_le_bytes(data[offset+21..offset+29].try_into().unwrap());
+            let exec_count = u64::from_le_bytes(data[offset+29..offset+37].try_into().unwrap());
+            // 3 bytes padding at offset+37..offset+40
             
-            offset += 32;
+            offset += 40;
             
             // Native code
             let code_end = offset + host_size as usize;
@@ -1167,6 +1217,7 @@ impl ReadyNowCache {
                 guest_instrs,
                 guest_checksum,
                 native_code,
+                exec_count,
             });
         }
         
@@ -1227,6 +1278,8 @@ pub struct NativeBlockInfo {
     pub guest_instrs: u32,
     pub guest_checksum: u64,
     pub native_code: Vec<u8>,
+    /// Execution count (for preserving hotness info)
+    pub exec_count: u64,
 }
 
 /// Cache statistics

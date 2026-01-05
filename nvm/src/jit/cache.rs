@@ -492,6 +492,56 @@ impl CodeCache {
         let total = hits + misses;
         if total > 0.0 { hits / total } else { 0.0 }
     }
+    
+    /// Get all compiled blocks for persistence
+    /// 
+    /// Returns a vector of (guest_rip, BlockPersistInfo) for each block in the cache.
+    /// The native code is copied out of executable memory for safe serialization.
+    pub fn get_all_blocks_for_persist(&self) -> Vec<(u64, BlockPersistInfo)> {
+        let blocks = self.blocks.read().unwrap();
+        blocks.iter()
+            .filter(|(_, b)| !b.invalidated && !b.host_code.is_null())
+            .map(|(&rip, b)| {
+                // Copy native code out of executable memory
+                let native_code = if !b.host_code.is_null() && b.host_size > 0 {
+                    unsafe {
+                        std::slice::from_raw_parts(b.host_code, b.host_size as usize).to_vec()
+                    }
+                } else {
+                    Vec::new()
+                };
+                
+                (rip, BlockPersistInfo {
+                    guest_rip: b.guest_rip,
+                    guest_size: b.guest_size,
+                    host_size: b.host_size,
+                    tier: b.tier,
+                    exec_count: b.exec_count.load(Ordering::Relaxed),
+                    guest_instrs: b.guest_instrs,
+                    guest_checksum: b.guest_checksum,
+                    native_code,
+                })
+            })
+            .collect()
+    }
+    
+    /// Get the number of compiled blocks
+    pub fn block_count(&self) -> usize {
+        self.blocks.read().unwrap().len()
+    }
+}
+
+/// Block info for persistence (with native code copy)
+#[derive(Clone, Debug)]
+pub struct BlockPersistInfo {
+    pub guest_rip: u64,
+    pub guest_size: u32,
+    pub host_size: u32,
+    pub tier: CompileTier,
+    pub exec_count: u64,
+    pub guest_instrs: u32,
+    pub guest_checksum: u64,
+    pub native_code: Vec<u8>,
 }
 
 /// Block info (without raw pointer)

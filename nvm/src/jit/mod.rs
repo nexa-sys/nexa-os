@@ -76,7 +76,7 @@ pub use compiler_s1::S1Compiler;
 pub use compiler_s2::{S2Compiler, S2Config};
 pub use codegen::CodeGen;
 pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
-pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError};
+pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo};
 pub use readynow::{ReadyNowCache, NativeBlockInfo};
 
 // ============================================================================
@@ -467,21 +467,51 @@ pub struct JitConfig {
     pub speculative_opts: bool,
 }
 
+/// Get system memory size in bytes
+fn get_system_memory() -> usize {
+    // Try to read from /proc/meminfo on Linux
+    if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+        for line in content.lines() {
+            if line.starts_with("MemTotal:") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(kb) = parts[1].parse::<usize>() {
+                        return kb * 1024; // Convert KB to bytes
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: assume 16GB if can't detect
+    16 * 1024 * 1024 * 1024
+}
+
 impl Default for JitConfig {
     fn default() -> Self {
-        // Default ReadyNow! path: ~/.nvm/readynow/
-        let readynow_path = dirs::home_dir()
-            .map(|p| p.join(".nvm").join("readynow").to_string_lossy().to_string());
+        // Default ReadyNow! path: ~/.local/share/nvm/readynow/
+        let readynow_path = dirs::data_local_dir()
+            .or_else(|| dirs::home_dir().map(|p| p.join(".local").join("share")))
+            .map(|p| p.join("nvm").join("readynow").to_string_lossy().to_string());
+        
+        // CodeCache size based on system memory
+        // Initial: 20% of system memory, Max: 30% of system memory
+        let sys_mem = get_system_memory();
+        let initial_size = sys_mem / 5;  // 20%
+        let max_size = sys_mem * 3 / 10; // 30%
+        
+        // Apply reasonable bounds (min 64MB, max 8GB)
+        let initial_size = initial_size.clamp(64 * 1024 * 1024, 8 * 1024 * 1024 * 1024);
+        let max_size = max_size.clamp(128 * 1024 * 1024, 8 * 1024 * 1024 * 1024);
         
         Self {
             tiered_compilation: true,
             thresholds: TierThresholds::default(),
-            code_cache_initial_size: 16 * 1024 * 1024,  // 16MB initial
-            code_cache_max_size: 256 * 1024 * 1024,     // 256MB max (like ZingJDK ReservedCodeCacheSize)
+            code_cache_initial_size: initial_size,
+            code_cache_max_size: max_size,
             code_cache_growth_factor: 1.5,              // Grow by 50% each expansion
             profile_db_size: 1_000_000,                 // 1M profile entries
             readynow_enabled: true,                     // ReadyNow! ON by default
-            readynow_path,
+            readynow_path,                              // ~/.local/share/nvm/readynow/
             readynow_auto_save: true,                   // Auto-save on shutdown
             readynow_save_interval_secs: 60,            // Periodic save every 60 seconds
             aggressive_inlining: true,
@@ -648,20 +678,30 @@ pub struct JitEngine {
 impl JitEngine {
     /// Create new JIT engine with default config
     pub fn new() -> Self {
-        Self::with_config(JitConfig::default())
+        Self::with_config(JitConfig::default(), None)
+    }
+    
+    /// Create new JIT engine with VM ID
+    pub fn new_with_vm_id(vm_id: &str) -> Self {
+        Self::with_config(JitConfig::default(), Some(vm_id))
     }
     
     /// Create new JIT engine with custom config
-    pub fn with_config(config: JitConfig) -> Self {
+    /// 
+    /// # Arguments
+    /// * `config` - JIT configuration
+    /// * `vm_id` - Optional VM ID for ReadyNow! cache isolation. If None, uses "default".
+    pub fn with_config(config: JitConfig, vm_id: Option<&str>) -> Self {
+        let instance_id = vm_id.unwrap_or("default");
         let readynow = if config.readynow_enabled {
             let cache_dir = config.readynow_path.clone()
                 .unwrap_or_else(|| "/tmp/nvm-jit".to_string());
-            Some(ReadyNowCache::new(&cache_dir, "default"))
+            Some(ReadyNowCache::new(&cache_dir, instance_id))
         } else {
             None
         };
         
-        Self {
+        let engine = Self {
             decoder: X86Decoder::new(),
             interpreter: Interpreter::new(),
             s1_compiler: S1Compiler::new(),
@@ -686,7 +726,24 @@ impl JitEngine {
             logged_first_s2: AtomicBool::new(false),
             last_readynow_save: std::sync::atomic::AtomicU64::new(0),
             config,
+        };
+        
+        // Try to load ReadyNow! cache for instant warmup
+        if engine.readynow.is_some() {
+            match engine.load_readynow() {
+                Ok(stats) => {
+                    if stats.native_blocks_loaded > 0 || stats.profiles_loaded > 0 {
+                        log::info!("[ReadyNow!] Loaded cache: {} native blocks, {} profiles in {}ms",
+                            stats.native_blocks_loaded, stats.profiles_loaded, stats.load_time_ms);
+                    }
+                }
+                Err(e) => {
+                    log::debug!("[ReadyNow!] No cache loaded (first run or error): {:?}", e);
+                }
+            }
         }
+        
+        engine
     }
     
     /// Execute guest code starting at RIP
@@ -1020,29 +1077,95 @@ impl JitEngine {
         let start = std::time::Instant::now();
         
         // 1. Try loading native code first (zero warmup if version matches)
-        if let Ok(Some(native_blocks)) = readynow.load_native() {
-            stats.native_blocks_loaded = native_blocks.len();
-            // Install native blocks directly into code cache
-            // (version check done inside load_native)
+        match readynow.load_native() {
+            Ok(Some(native_blocks)) => {
+                stats.native_blocks_loaded = native_blocks.len();
+                // Install native blocks directly into code cache
+                for (rip, block_info) in native_blocks {
+                    if let Err(e) = self.install_native_block(rip, block_info) {
+                        log::warn!("[ReadyNow!] Failed to install native block {:#x}: {:?}", rip, e);
+                    }
+                }
+                log::debug!("[ReadyNow!] Installed {} native code blocks", stats.native_blocks_loaded);
+            }
+            Ok(None) => {
+                log::debug!("[ReadyNow!] Native cache version mismatch, will recompile");
+            }
+            Err(e) => {
+                log::debug!("[ReadyNow!] No native cache found: {:?}", e);
+            }
         }
         
         // 2. Load RI blocks (backward compatible)
-        if let Ok(ir_blocks) = readynow.load_ri() {
-            stats.ir_blocks_loaded = ir_blocks.len();
-            // These can be compiled on demand
+        match readynow.load_ri() {
+            Ok(ir_blocks) => {
+                stats.ir_blocks_loaded = ir_blocks.len();
+                // Store IR blocks for on-demand compilation
+                let mut blocks = self.blocks.write().unwrap();
+                for (rip, ir) in ir_blocks {
+                    let meta = blocks.entry(rip).or_insert_with(|| Arc::new(BlockMeta::new(rip)));
+                    // Note: We can't modify Arc<BlockMeta> directly, IR caching needs redesign
+                    // For now, IR blocks will be recompiled on demand
+                }
+                log::debug!("[ReadyNow!] Loaded {} IR blocks", stats.ir_blocks_loaded);
+            }
+            Err(e) => {
+                log::debug!("[ReadyNow!] No RI cache found: {:?}", e);
+            }
         }
         
         // 3. Always load profile (full compat, guides compilation)
-        if let Ok(profile) = readynow.load_profile() {
-            stats.profiles_loaded = profile.block_count();
-            // Merge profile data to guide hot path detection
-            self.profile_db.merge(&profile);
+        match readynow.load_profile() {
+            Ok(profile) => {
+                stats.profiles_loaded = profile.block_count();
+                // Merge profile data to guide hot path detection
+                self.profile_db.merge(&profile);
+                log::debug!("[ReadyNow!] Loaded {} profile entries", stats.profiles_loaded);
+            }
+            Err(e) => {
+                log::debug!("[ReadyNow!] No profile cache found: {:?}", e);
+            }
         }
         
         stats.load_time_ms = start.elapsed().as_millis() as u64;
         self.stats.readynow_loads.fetch_add(1, Ordering::Relaxed);
         
         Ok(stats)
+    }
+    
+    /// Install a native code block from ReadyNow! cache into code cache
+    fn install_native_block(&self, rip: u64, info: readynow::NativeBlockInfo) -> JitResult<()> {
+        // Allocate executable memory and copy the native code
+        let host_ptr = self.code_cache.allocate_code(&info.native_code)
+            .ok_or(JitError::CodeCacheFull)?;
+        
+        // Create CompiledBlock and install in cache
+        let block = CompiledBlock {
+            guest_rip: rip,
+            guest_size: info.guest_size,
+            host_code: host_ptr,
+            host_size: info.host_size,
+            tier: info.tier,
+            exec_count: AtomicU64::new(info.exec_count),
+            last_access: AtomicU64::new(0),
+            guest_instrs: info.guest_instrs,
+            guest_checksum: info.guest_checksum,
+            depends_on: Vec::new(),
+            invalidated: false,
+        };
+        
+        self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
+        
+        // Update block metadata tier
+        let meta = self.get_or_create_block(rip);
+        let tier = match info.tier {
+            CompileTier::Interpreter => ExecutionTier::Interpreter,
+            CompileTier::S1 => ExecutionTier::S1,
+            CompileTier::S2 => ExecutionTier::S2,
+        };
+        meta.set_tier(tier);
+        
+        Ok(())
     }
     
     /// Save ReadyNow! cache in specified format
@@ -1062,6 +1185,7 @@ impl JitEngine {
             }
             PersistFormat::Ri => {
                 // RI: Backward compatible IR
+                // Note: IR is stored in blocks metadata, not code_cache
                 let blocks = self.blocks.read().unwrap();
                 let ir_blocks: HashMap<u64, _> = blocks.iter()
                     .filter_map(|(rip, meta)| {
@@ -1072,32 +1196,9 @@ impl JitEngine {
             }
             PersistFormat::Native => {
                 // Native: Same-generation only
-                let blocks = self.blocks.read().unwrap();
-                let native_blocks: HashMap<u64, _> = blocks.iter()
-                    .filter_map(|(rip, meta)| {
-                        meta.native_code.map(|ptr| {
-                            let compiled = CompiledBlock {
-                                guest_rip: *rip,
-                                guest_size: meta.guest_size as u32,
-                                host_code: ptr,
-                                host_size: meta.native_size as u32,
-                                tier: match meta.get_tier() {
-                                    ExecutionTier::Interpreter => CompileTier::Interpreter,
-                                    ExecutionTier::S1 => CompileTier::S1,
-                                    ExecutionTier::S2 => CompileTier::S2,
-                                },
-                                exec_count: AtomicU64::new(meta.invocations.load(Ordering::Relaxed)),
-                                last_access: AtomicU64::new(meta.last_exec.load(Ordering::Relaxed)),
-                                guest_instrs: 0,
-                                guest_checksum: 0,
-                                depends_on: Vec::new(),
-                                invalidated: !meta.valid.load(Ordering::Relaxed),
-                            };
-                            (*rip, compiled)
-                        })
-                    })
-                    .collect();
-                readynow.save_native(&native_blocks)
+                // Get compiled blocks from code_cache (this is where they actually live!)
+                let persist_blocks = self.code_cache.get_all_blocks_for_persist();
+                readynow.save_native_from_persist(&persist_blocks)
             }
             PersistFormat::All => {
                 // Save all formats for maximum flexibility

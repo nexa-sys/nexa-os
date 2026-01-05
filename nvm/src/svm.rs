@@ -1144,7 +1144,7 @@ impl SvmExecutor {
         
         Self {
             svm,
-            jit: JitEngine::with_config(jit_config),
+            jit: JitEngine::with_config(jit_config, None),
             address_space,
             running: AtomicBool::new(false),
             stats: RwLock::new(SvmExecStats::default()),

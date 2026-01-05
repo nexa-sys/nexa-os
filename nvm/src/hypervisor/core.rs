@@ -1879,13 +1879,18 @@ impl VmInstance {
     /// Start with pure JIT (software) backend
     fn start_jit_backend(&self, _address_space: &Arc<AddressSpace>) -> HypervisorResult<()> {
         let jit_config = Self::default_jit_config();
-        let engine = crate::jit::JitEngine::with_config(jit_config);
+        // Pass VM ID for ReadyNow! cache isolation
+        let vm_id_str = self.id.to_string();
+        let engine = crate::jit::JitEngine::with_config(jit_config, Some(&vm_id_str));
         
         *self.jit_engine.write().unwrap() = Some(Arc::new(engine));
         Ok(())
     }
     
     /// Default JIT configuration
+    /// 
+    /// Note: CodeCache sizes are now dynamically calculated in JitConfig::default()
+    /// based on system memory (20% initial, 30% max).
     fn default_jit_config() -> crate::jit::JitConfig {
         use crate::jit::TierThresholds;
         
@@ -1896,9 +1901,7 @@ impl VmInstance {
                 s1_to_s2: 2000,          // ZingJDK default: Tier3CompileThreshold=2000
                 ..Default::default()
             },
-            code_cache_initial_size: 16 * 1024 * 1024,  // 16MB initial
-            code_cache_max_size: 256 * 1024 * 1024,     // 256MB max
-            code_cache_growth_factor: 1.5,              // 50% growth
+            // Use defaults from JitConfig (20%/30% of system memory) for code_cache sizes
             profile_db_size: 100_000,
             loop_unrolling: true,
             aggressive_inlining: true,
