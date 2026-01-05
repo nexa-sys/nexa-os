@@ -643,8 +643,8 @@ impl Firmware for UefiFirmware {
             0xBC, 0x00, 0x7C,             // MOV SP, 0x7C00
             
             // ---- PEI Phase: Switch to 32-bit Protected Mode ----
-            // Load GDT (GDT at 0x80000)
-            0x0F, 0x01, 0x16, 0x50, 0x70, // LGDT [0x7050] (GDT descriptor)
+            // Load GDT (GDTR at DS:0x30 = linear 0x30, GDT table at 0x80000)
+            0x0F, 0x01, 0x16, 0x30, 0x00, // LGDT [0x0030]
             
             // Enable Protected Mode (set CR0.PE)
             0x0F, 0x20, 0xC0,             // MOV EAX, CR0
@@ -661,12 +661,13 @@ impl Firmware for UefiFirmware {
             memory[sec_addr..sec_addr + sec_code.len()].copy_from_slice(sec_code);
         }
         
-        // GDT descriptor at 0x7050 (used by LGDT in real mode)
-        let gdt_desc: &[u8] = &[
+        // GDTR structure at linear address 0x30 (DS=0, so LGDT [0x30] reads here)
+        // GDT table itself is at 0x80000
+        let gdtr_struct: &[u8] = &[
             0x2F, 0x00,                   // Limit: 47 (6 entries * 8 - 1)
             0x00, 0x00, 0x08, 0x00,       // Base: 0x80000
         ];
-        memory[0x7050..0x7050 + gdt_desc.len()].copy_from_slice(gdt_desc);
+        memory[0x30..0x30 + gdtr_struct.len()].copy_from_slice(gdtr_struct);
         
         // 32-bit protected mode code at 0x7030
         // This is PEI -> DXE transition: switch from 32-bit to 64-bit
@@ -729,13 +730,13 @@ impl Firmware for UefiFirmware {
             0x48, 0xBF,                   // MOV RDI, imm64
             0x00, 0x80, 0x0B, 0x00,       // 0xB8000
             0x00, 0x00, 0x00, 0x00,
-            0xB8, 0x55, 0x1F,             // MOV AX, 0x1F55 ('U' white on blue)
+            0x66, 0xB8, 0x55, 0x1F,       // MOV AX, 0x1F55 ('U' white on blue) - needs 66 prefix in 64-bit
             0x66, 0x89, 0x07,             // MOV [RDI], AX
-            0xB8, 0x45, 0x1F,             // MOV AX, 0x1F45 ('E')
+            0x66, 0xB8, 0x45, 0x1F,       // MOV AX, 0x1F45 ('E')
             0x66, 0x89, 0x47, 0x02,       // MOV [RDI+2], AX
-            0xB8, 0x46, 0x1F,             // MOV AX, 0x1F46 ('F')
+            0x66, 0xB8, 0x46, 0x1F,       // MOV AX, 0x1F46 ('F')
             0x66, 0x89, 0x47, 0x04,       // MOV [RDI+4], AX
-            0xB8, 0x49, 0x1F,             // MOV AX, 0x1F49 ('I')
+            0x66, 0xB8, 0x49, 0x1F,       // MOV AX, 0x1F49 ('I')
             0x66, 0x89, 0x47, 0x06,       // MOV [RDI+6], AX
             
             // HLT loop (wait for boot device)

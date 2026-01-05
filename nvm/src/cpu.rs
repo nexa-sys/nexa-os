@@ -978,6 +978,32 @@ impl VirtualCpu {
         }
     }
     
+    /// Read segment attributes (including L and D/B bits)
+    pub fn read_segment_attrib(&self, seg: SegmentRegister) -> u16 {
+        let state = self.state.read().unwrap();
+        match seg {
+            SegmentRegister::Cs => state.segments.cs.attrib,
+            SegmentRegister::Ds => state.segments.ds.attrib,
+            SegmentRegister::Es => state.segments.es.attrib,
+            SegmentRegister::Fs => state.segments.fs.attrib,
+            SegmentRegister::Gs => state.segments.gs.attrib,
+            SegmentRegister::Ss => state.segments.ss.attrib,
+        }
+    }
+    
+    /// Write segment attributes
+    pub fn write_segment_attrib(&self, seg: SegmentRegister, attrib: u16) {
+        let mut state = self.state.write().unwrap();
+        match seg {
+            SegmentRegister::Cs => state.segments.cs.attrib = attrib,
+            SegmentRegister::Ds => state.segments.ds.attrib = attrib,
+            SegmentRegister::Es => state.segments.es.attrib = attrib,
+            SegmentRegister::Fs => state.segments.fs.attrib = attrib,
+            SegmentRegister::Gs => state.segments.gs.attrib = attrib,
+            SegmentRegister::Ss => state.segments.ss.attrib = attrib,
+        }
+    }
+    
     // ========================================================================
     // Descriptor Table Register Operations (GDTR/IDTR)
     // ========================================================================

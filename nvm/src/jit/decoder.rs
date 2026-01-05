@@ -629,6 +629,40 @@ impl X86Decoder {
                 Operand::Far { seg: segment, off: offset }
             }
             
+            OpEnc::FarPtrV => {
+                // Far pointer size depends on operand size
+                // In Real/16-bit mode: ptr16:16 (4 bytes)
+                // In Protected/32-bit mode (with 66h prefix in real mode): ptr16:32 (6 bytes)
+                let op_size = self.get_operand_size(instr);
+                if op_size == 2 {
+                    // 16-bit offset
+                    let offset = u16::from_le_bytes([
+                        bytes.get(pos).copied().unwrap_or(0),
+                        bytes.get(pos + 1).copied().unwrap_or(0),
+                    ]) as u64;
+                    let segment = u16::from_le_bytes([
+                        bytes.get(pos + 2).copied().unwrap_or(0),
+                        bytes.get(pos + 3).copied().unwrap_or(0),
+                    ]) as u16;
+                    pos += 4;
+                    Operand::Far { seg: segment, off: offset }
+                } else {
+                    // 32-bit offset (with 66h prefix in 16-bit mode, or default in 32-bit mode)
+                    let offset = u32::from_le_bytes([
+                        bytes.get(pos).copied().unwrap_or(0),
+                        bytes.get(pos + 1).copied().unwrap_or(0),
+                        bytes.get(pos + 2).copied().unwrap_or(0),
+                        bytes.get(pos + 3).copied().unwrap_or(0),
+                    ]) as u64;
+                    let segment = u16::from_le_bytes([
+                        bytes.get(pos + 4).copied().unwrap_or(0),
+                        bytes.get(pos + 5).copied().unwrap_or(0),
+                    ]) as u16;
+                    pos += 6;
+                    Operand::Far { seg: segment, off: offset }
+                }
+            }
+            
             OpEnc::RegAx => {
                 let size = self.get_operand_size(instr);
                 Operand::Reg(Register { kind: RegKind::Gpr, index: 0, size })
@@ -654,6 +688,14 @@ impl X86Decoder {
                 let reg = (modrm >> 3) & 0x07;
                 // Segment registers: ES=0, CS=1, SS=2, DS=3, FS=4, GS=5
                 Operand::Reg(Register { kind: RegKind::Segment, index: reg, size: 2 })
+            }
+            
+            OpEnc::CrReg => {
+                // Control register from ModR/M reg field
+                let modrm = modrm.unwrap_or(0);
+                let reg = (modrm >> 3) & 0x07;
+                // Control registers: CR0, CR2, CR3, CR4 (CR1 reserved, CR5-7 reserved)
+                Operand::Reg(Register { kind: RegKind::Control, index: reg, size: 8 })
             }
             
             _ => Operand::None,
@@ -1061,12 +1103,12 @@ impl X86Decoder {
             0xCD => [OpEnc::Imm8, OpEnc::None, OpEnc::None, OpEnc::None],
             0xE8 => [OpEnc::Rel32, OpEnc::None, OpEnc::None, OpEnc::None],
             0xE9 => [OpEnc::Rel32, OpEnc::None, OpEnc::None, OpEnc::None],
-            0xEA => [OpEnc::FarPtr16, OpEnc::None, OpEnc::None, OpEnc::None], // JMP FAR ptr16:16
+            0xEA => [OpEnc::FarPtrV, OpEnc::None, OpEnc::None, OpEnc::None], // JMP FAR ptr16:16/32
             0xEB => [OpEnc::Rel8, OpEnc::None, OpEnc::None, OpEnc::None],
             // Two-byte opcodes
             0x0F01 => [OpEnc::ModRm, OpEnc::None, OpEnc::None, OpEnc::None], // LGDT/LIDT/etc m
-            0x0F20 => [OpEnc::ModRmReg, OpEnc::ModRm, OpEnc::None, OpEnc::None], // MOV r64, CRn
-            0x0F22 => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None], // MOV CRn, r64
+            0x0F20 => [OpEnc::ModRm, OpEnc::CrReg, OpEnc::None, OpEnc::None], // MOV r64, CRn (dst=r/m, src=CRn)
+            0x0F22 => [OpEnc::CrReg, OpEnc::ModRm, OpEnc::None, OpEnc::None], // MOV CRn, r64 (dst=CRn, src=r/m)
             0x0F80..=0x0F8F => [OpEnc::Rel32, OpEnc::None, OpEnc::None, OpEnc::None],
             _ => [OpEnc::None, OpEnc::None, OpEnc::None, OpEnc::None],
         }
@@ -1123,8 +1165,10 @@ enum OpEnc {
     ModRm,
     ModRmReg,
     SegRegModRm, // Segment register from ModR/M reg field (for 8C/8E)
+    CrReg,       // Control register from ModR/M reg field (for 0F 20/22)
     FarPtr16,  // ptr16:16 (segment:offset) for real mode JMP FAR
     FarPtr32,  // ptr16:32 (segment:offset) for protected mode JMP FAR
+    FarPtrV,   // Far pointer size depends on operand size (16 or 32-bit offset)
 }
 
 impl Default for X86Decoder {

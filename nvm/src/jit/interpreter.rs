@@ -2,9 +2,12 @@
 //!
 //! Zero-warmup interpreter for cold code execution.
 //! Collects profiling data for JIT compilation decisions.
+//!
+//! Stateful architecture: syncs CPU mode at block entry,
+//! exits block on mode-changing instructions (MOV CR0, WRMSR to EFER).
 
 use super::{JitResult, JitError, ExecuteResult, StepResult, MemAccess};
-use super::decoder::{X86Decoder, DecodedInstr, Mnemonic, Operand, Register, RegKind, MemOp};
+use super::decoder::{X86Decoder, DecodedInstr, Mnemonic, Operand, Register, RegKind, MemOp, CpuMode};
 use super::profile::ProfileDb;
 use crate::cpu::VirtualCpu;
 use crate::memory::AddressSpace;
@@ -24,18 +27,58 @@ impl Interpreter {
         Self { max_instrs }
     }
     
+    /// Get CPU mode from CR0, EFER, and CS.L bit
+    fn get_cpu_mode(cpu: &VirtualCpu) -> CpuMode {
+        use crate::cpu::SegmentRegister;
+        
+        let cr0 = cpu.read_cr0();
+        let efer = cpu.read_msr(0xC000_0080); // IA32_EFER
+        
+        let pe = (cr0 & 1) != 0;          // Protected mode enabled
+        let pg = (cr0 & 0x8000_0000) != 0; // Paging enabled
+        let lma = (efer & 0x400) != 0;    // Long mode active
+        
+        if lma && pg {
+            // In Long Mode, check CS.L bit to distinguish 64-bit vs compatibility mode
+            // CS.attrib bit 9 (0x200) is the L (Long) bit in segment descriptor
+            let cs_attrib = cpu.read_segment_attrib(SegmentRegister::Cs);
+            let cs_l = (cs_attrib & 0x200) != 0;  // L bit = bit 9 of attrib
+            
+            if cs_l {
+                CpuMode::Long  // 64-bit mode
+            } else {
+                CpuMode::Protected  // Compatibility mode (32-bit under long mode)
+            }
+        } else if pe {
+            CpuMode::Protected
+        } else {
+            CpuMode::Real
+        }
+    }
+    
     /// Execute a basic block starting at RIP
     pub fn execute_block(
         &self,
         cpu: &VirtualCpu,
         memory: &AddressSpace,
         start_rip: u64,
-        decoder: &X86Decoder,
+        _decoder: &X86Decoder,  // Ignored - we determine mode from CPU state
         profile: &ProfileDb,
     ) -> JitResult<ExecuteResult> {
+        use crate::cpu::SegmentRegister;
+        
         let mut rip = start_rip;
         let mut executed = 0;
         
+        // Determine mode ONCE at block entry (exits on mode change)
+        let mode = Self::get_cpu_mode(cpu);
+        let cr0 = cpu.read_cr0();
+        let efer = cpu.read_msr(0xC000_0080); // EFER
+        let cs_attrib = cpu.read_segment_attrib(SegmentRegister::Cs);
+        log::debug!("[Interp] Block start at {:#x}, mode={:?}, CR0={:#x}, EFER={:#x}, CS.attrib={:#x}", 
+                   start_rip, mode, cr0, efer, cs_attrib);
+        let decoder = X86Decoder::with_mode(mode);
+
         while executed < self.max_instrs {
             // Fetch instruction bytes
             let mut bytes = [0u8; 15];
@@ -43,7 +86,7 @@ impl Interpreter {
                 bytes[i] = memory.read_u8(rip + i as u64);
             }
             
-            // Decode
+            // Decode with current mode
             let instr = decoder.decode(&bytes, rip)?;
             
             // Debug first few instructions
@@ -72,6 +115,12 @@ impl Interpreter {
                     cpu.write_rip(rip + instr.len as u64);
                     return Ok(reason);
                 }
+                InstrResult::ModeChanged(next_rip) => {
+                    // CPU mode changed - exit block so next iteration re-syncs mode
+                    cpu.write_rip(next_rip);
+                    log::info!("[Interp] Mode changed at {:#x}, exiting block", instr.rip);
+                    return Ok(ExecuteResult::Continue { next_rip });
+                }
             }
         }
         
@@ -97,6 +146,7 @@ impl Interpreter {
                 (if taken { target } else { fallthrough }, Some(taken))
             }
             InstrResult::Exit(_) => (instr.rip + instr.len as u64, None),
+            InstrResult::ModeChanged(rip) => (rip, None), // Mode change in single-step is just continue
         };
         
         Ok(StepResult {
@@ -215,7 +265,21 @@ impl Interpreter {
                 let eax = cpu.read_gpr(0) as u32;
                 let edx = cpu.read_gpr(2) as u32;
                 let value = ((edx as u64) << 32) | (eax as u64);
-                cpu.write_msr(msr_addr, value);
+                
+                // Check if writing to EFER (0xC0000080) and LME/LMA bits change
+                if msr_addr == 0xC000_0080 {
+                    let old_efer = cpu.read_msr(msr_addr);
+                    cpu.write_msr(msr_addr, value);
+                    let lme_changed = (old_efer & 0x100) != (value & 0x100);  // LME bit
+                    let lma_changed = (old_efer & 0x400) != (value & 0x400);  // LMA bit
+                    if lme_changed || lma_changed {
+                        log::info!("[JIT] WRMSR EFER: {:#x} -> {:#x}, mode change!", old_efer, value);
+                        return Ok(InstrResult::ModeChanged(next_rip));
+                    }
+                } else {
+                    cpu.write_msr(msr_addr, value);
+                }
+                
                 log::debug!("[JIT] WRMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
                 Ok(InstrResult::Continue(next_rip))
             }
@@ -253,9 +317,40 @@ impl Interpreter {
     // ========================================================================
     
     fn exec_mov(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let next_rip = instr.rip + instr.len as u64;
         let value = self.read_operand(cpu, memory, &instr.operands[1], instr)?;
+        
+        // Check if writing to control register that affects CPU mode
+        if let Operand::Reg(r) = &instr.operands[0] {
+            if r.kind == RegKind::Control {
+                match r.index {
+                    0 => {
+                        // MOV CR0 - check if PE or PG bits change
+                        let old_cr0 = cpu.read_cr0();
+                        cpu.write_cr0(value);
+                        let pe_changed = (old_cr0 & 1) != (value & 1);
+                        let pg_changed = (old_cr0 & 0x8000_0000) != (value & 0x8000_0000);
+                        if pe_changed || pg_changed {
+                            log::info!("[Interp] MOV CR0: {:#x} -> {:#x}, mode change!", old_cr0, value);
+                            return Ok(InstrResult::ModeChanged(next_rip));
+                        }
+                        return Ok(InstrResult::Continue(next_rip));
+                    }
+                    3 => {
+                        cpu.write_cr3(value);
+                        return Ok(InstrResult::Continue(next_rip));
+                    }
+                    4 => {
+                        cpu.write_cr4(value);
+                        return Ok(InstrResult::Continue(next_rip));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
         self.write_operand(cpu, memory, &instr.operands[0], value, instr)?;
-        Ok(InstrResult::Continue(instr.rip + instr.len as u64))
+        Ok(InstrResult::Continue(next_rip))
     }
     
     fn exec_movzx(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
@@ -458,16 +553,70 @@ impl Interpreter {
     fn exec_jmp(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let target = match &instr.operands[0] {
             Operand::Rel(offset) => {
-                (instr.rip as i64 + instr.len as i64 + offset) as u64
+                return Ok(InstrResult::Continue(
+                    (instr.rip as i64 + instr.len as i64 + offset) as u64
+                ));
             }
             Operand::Far { seg, off } => {
                 // FAR JMP: segment:offset
-                // In real mode: linear = segment * 16 + offset
-                // In protected/long mode: segment is a selector, need to load CS
-                // For now, assume real mode
-                let linear = (*seg as u64) * 16 + *off;
-                // Update CS segment base
-                cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, (*seg as u64) * 16);
+                let old_mode = Self::get_cpu_mode(cpu);
+                let linear = match old_mode {
+                    CpuMode::Real => {
+                        // Real mode: linear = segment * 16 + offset
+                        cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, (*seg as u64) * 16);
+                        (*seg as u64) * 16 + *off
+                    }
+                    CpuMode::Protected | CpuMode::Long | CpuMode::Compat => {
+                        // Protected/Compatibility mode: segment is a selector
+                        // Load the segment descriptor from GDT and compute linear address
+                        let selector = *seg;
+                        let (gdt_limit, gdt_base) = cpu.get_gdtr();
+                        let index = (selector >> 3) as u64;
+                        let desc_addr = gdt_base + index * 8;
+                        
+                        // Check bounds
+                        if desc_addr + 8 > gdt_base + gdt_limit as u64 + 1 {
+                            log::error!("JMP FAR: GDT index {} out of bounds", index);
+                            return Err(JitError::DecodeError { 
+                                rip: instr.rip, 
+                                bytes: vec![], 
+                                reason: format!("GDT index {} out of bounds", index)
+                            });
+                        }
+                        
+                        // Read 8-byte descriptor
+                        let desc_lo = memory.read_u32(desc_addr) as u64;
+                        let desc_hi = memory.read_u32(desc_addr + 4) as u64;
+                        
+                        // Extract base address from descriptor
+                        // base[15:0] = desc[31:16], base[23:16] = desc[39:32], base[31:24] = desc[63:56]
+                        let base = ((desc_lo >> 16) & 0xFFFF) | 
+                                   ((desc_hi & 0xFF) << 16) |
+                                   ((desc_hi >> 24) << 24);
+                        
+                        // Extract attributes (including L bit)
+                        // attrib = desc[55:40] (Type, S, DPL, P, AVL, L, D/B, G)
+                        let attrib = ((desc_hi >> 8) & 0xFFFF) as u16;
+                        
+                        // Update CS with new selector and attributes
+                        cpu.write_segment_selector(crate::cpu::SegmentRegister::Cs, selector);
+                        cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, base);
+                        cpu.write_segment_attrib(crate::cpu::SegmentRegister::Cs, attrib);
+                        
+                        log::debug!("JMP FAR: sel={:#x}, base={:#x}, attrib={:#x}, off={:#x}, target={:#x}",
+                                   selector, base, attrib, *off, base + *off);
+                        
+                        base + *off
+                    }
+                };
+                
+                // Check if mode changed (CS.L bit affects decoder mode)
+                let new_mode = Self::get_cpu_mode(cpu);
+                if new_mode != old_mode {
+                    log::info!("[Interp] JMP FAR changed mode: {:?} -> {:?}", old_mode, new_mode);
+                    return Ok(InstrResult::ModeChanged(linear));
+                }
+                
                 linear
             }
             _ => self.read_operand(cpu, memory, &instr.operands[0], instr)?,
@@ -654,7 +803,11 @@ impl Interpreter {
         
         // Get memory address from operand
         let addr = match &instr.operands[0] {
-            Operand::Mem(m) => self.compute_ea(cpu, m, instr)?,
+            Operand::Mem(m) => {
+                let ea = self.compute_ea(cpu, m, instr)?;
+                log::debug!("[JIT] LGDT/LIDT: mem operand {:?}, computed EA={:#x}", m, ea);
+                ea
+            }
             _ => {
                 log::error!("[JIT] LGDT/LIDT requires memory operand, got {:?}", instr.operands[0]);
                 return Err(JitError::UnsupportedInstruction {
@@ -666,6 +819,16 @@ impl Interpreter {
         
         // Read limit (2 bytes, always)
         let limit = memory.read_u16(addr);
+        
+        // Debug: dump the GDT descriptor region
+        let b0 = memory.read_u8(addr);
+        let b1 = memory.read_u8(addr + 1);
+        let b2 = memory.read_u8(addr + 2);
+        let b3 = memory.read_u8(addr + 3);
+        let b4 = memory.read_u8(addr + 4);
+        let b5 = memory.read_u8(addr + 5);
+        log::debug!("[JIT] LGDT: mem at {:#x} = [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x}]", 
+                   addr, b0, b1, b2, b3, b4, b5);
         
         // Read base address - size depends on operand size (CPU mode)
         // In 16-bit real mode: 24-bit (3 bytes), but we read 4 bytes and mask
@@ -684,7 +847,10 @@ impl Interpreter {
             memory.read_u32(addr + 2) as u64
         } else {
             // 16-bit real mode: 24-bit base (stored as 3 bytes, we read 4 and mask)
-            memory.read_u32(addr + 2) as u64 & 0x00FF_FFFF
+            // Note: In real mode, we read 4 bytes but only use 24 bits
+            let raw = memory.read_u32(addr + 2);
+            log::debug!("[JIT] LGDT real mode: raw 4 bytes at addr+2 = {:#x}", raw);
+            raw as u64 & 0x00FF_FFFF
         };
         
         // Update the appropriate register
@@ -723,6 +889,15 @@ impl Interpreter {
                         _ => return Ok(0),
                     };
                     Ok(cpu.read_segment_selector(seg) as u64)
+                } else if r.kind == RegKind::Control {
+                    // Control registers CR0, CR2, CR3, CR4
+                    match r.index {
+                        0 => Ok(cpu.read_cr0()),
+                        2 => Ok(cpu.read_cr2()),
+                        3 => Ok(cpu.read_cr3()),
+                        4 => Ok(cpu.read_cr4()),
+                        _ => Ok(0),
+                    }
                 } else {
                     self.read_reg(cpu, r)
                 }
@@ -914,6 +1089,8 @@ enum InstrResult {
     Continue(u64),
     Branch { taken: bool, target: u64, fallthrough: u64 },
     Exit(ExecuteResult),
+    /// CPU mode changed (MOV CR0 or WRMSR to EFER) - must exit block and re-sync
+    ModeChanged(u64),
 }
 
 #[derive(Clone, Copy)]
