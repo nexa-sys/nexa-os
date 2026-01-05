@@ -732,9 +732,28 @@ impl JitEngine {
         if engine.nready.is_some() {
             match engine.load_nready() {
                 Ok(stats) => {
-                    if stats.native_blocks_loaded > 0 || stats.profiles_loaded > 0 {
-                        log::info!("[NReady!] Loaded cache: {} native blocks, {} profiles in {}ms",
-                            stats.native_blocks_loaded, stats.profiles_loaded, stats.load_time_ms);
+                    let warmup_type = stats.warmup_type();
+                    if stats.native_blocks_loaded > 0 || stats.ir_blocks_loaded > 0 || stats.profiles_loaded > 0 {
+                        log::info!("[NReady!] {}", stats.summary());
+                        
+                        // Log warmup skip info based on type
+                        match warmup_type {
+                            NReadyWarmupType::Hot => {
+                                log::info!("[NReady!] Warmup skipped: {} native blocks ready, VM runs at S1/S2 performance immediately",
+                                    stats.native_blocks_loaded);
+                            }
+                            NReadyWarmupType::WarmHot => {
+                                log::info!("[NReady!] Partial warmup skip: {} native + {} IR blocks loaded, fast codegen on first access",
+                                    stats.native_blocks_loaded, stats.ir_blocks_loaded);
+                            }
+                            NReadyWarmupType::Warm => {
+                                log::info!("[NReady!] Profile-guided mode: {} hotspot entries loaded, will guide JIT optimization",
+                                    stats.profiles_loaded);
+                            }
+                            NReadyWarmupType::Cold => {
+                                log::info!("[NReady¿] It's a bit cold here, Little Misaka. Let's start a fire");
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -1378,6 +1397,30 @@ pub struct MemAccess {
     pub value: u64,
 }
 
+/// NReady! warmup type based on cache contents
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NReadyWarmupType {
+    /// Hot start: >50% native blocks, instant execution
+    Hot,
+    /// Warm-hot start: >30% native + IR combined, fast codegen
+    WarmHot,
+    /// Warm start: profile-guided, needs recompilation but optimized
+    Warm,
+    /// Cold start: no cache or minimal data
+    Cold,
+}
+
+impl std::fmt::Display for NReadyWarmupType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NReadyWarmupType::Hot => write!(f, "Hot"),
+            NReadyWarmupType::WarmHot => write!(f, "Warm-Hot"),
+            NReadyWarmupType::Warm => write!(f, "Warm"),
+            NReadyWarmupType::Cold => write!(f, "Cold"),
+        }
+    }
+}
+
 /// NReady! load statistics
 #[derive(Debug, Clone, Default)]
 pub struct NReadyStats {
@@ -1386,6 +1429,85 @@ pub struct NReadyStats {
     pub native_blocks_loaded: usize,
     pub native_blocks_rejected: usize,
     pub load_time_ms: u64,
+}
+
+impl NReadyStats {
+    /// Calculate total blocks loaded (excluding profiles which are metadata)
+    pub fn total_code_blocks(&self) -> usize {
+        self.native_blocks_loaded + self.ir_blocks_loaded
+    }
+    
+    /// Calculate percentage of native blocks (instant execution)
+    pub fn native_ratio(&self) -> f32 {
+        let total = self.total_code_blocks();
+        if total == 0 { return 0.0; }
+        (self.native_blocks_loaded as f32 / total as f32) * 100.0
+    }
+    
+    /// Calculate percentage of IR blocks (fast codegen)
+    pub fn ir_ratio(&self) -> f32 {
+        let total = self.total_code_blocks();
+        if total == 0 { return 0.0; }
+        (self.ir_blocks_loaded as f32 / total as f32) * 100.0
+    }
+    
+    /// Determine warmup type based on loaded cache contents
+    /// 
+    /// Classification:
+    /// - Hot: >50% native blocks (instant, zero warmup)
+    /// - Warm-Hot: >30% native+IR combined (fast codegen path)
+    /// - Warm: has profile data (guided recompilation)
+    /// - Cold: nothing useful loaded
+    pub fn warmup_type(&self) -> NReadyWarmupType {
+        let total = self.total_code_blocks();
+        
+        if total == 0 {
+            // No code blocks, check if we have profile
+            if self.profiles_loaded > 0 {
+                return NReadyWarmupType::Warm;
+            }
+            return NReadyWarmupType::Cold;
+        }
+        
+        let native_pct = self.native_ratio();
+        let combined_pct = native_pct + self.ir_ratio();
+        
+        if native_pct >= 50.0 {
+            NReadyWarmupType::Hot
+        } else if combined_pct >= 30.0 || self.native_blocks_loaded >= 1 {
+            NReadyWarmupType::WarmHot
+        } else if self.profiles_loaded > 0 {
+            NReadyWarmupType::Warm
+        } else {
+            NReadyWarmupType::Cold
+        }
+    }
+    
+    /// Format a summary string for logging
+    pub fn summary(&self) -> String {
+        let warmup = self.warmup_type();
+        let total = self.total_code_blocks();
+        
+        if total == 0 && self.profiles_loaded == 0 {
+            return format!("[{}] no cache data", warmup);
+        }
+        
+        let mut parts = Vec::new();
+        
+        if self.native_blocks_loaded > 0 {
+            parts.push(format!("Native: {} ({:.1}%)", 
+                self.native_blocks_loaded, self.native_ratio()));
+        }
+        if self.ir_blocks_loaded > 0 {
+            parts.push(format!("IR: {} ({:.1}%)", 
+                self.ir_blocks_loaded, self.ir_ratio()));
+        }
+        if self.profiles_loaded > 0 {
+            parts.push(format!("Profile: {}", self.profiles_loaded));
+        }
+        
+        format!("[{}] {} | {}ms", warmup, parts.join(", "), self.load_time_ms)
+    }
 }
 
 #[cfg(test)]
