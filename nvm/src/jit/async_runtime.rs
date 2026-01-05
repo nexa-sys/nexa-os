@@ -55,6 +55,11 @@ use std::cmp::Ordering as CmpOrdering;
 
 use super::cache::{CodeCache, CompileTier, CompiledBlock};
 use super::ir::IrBlock;
+use super::decoder::X86Decoder;
+use super::compiler_s1::S1Compiler;
+use super::compiler_s2::S2Compiler;
+use super::codegen::CodeGen;
+use super::profile::ProfileDb;
 use super::{JitError, JitResult};
 
 // ============================================================================
@@ -158,6 +163,9 @@ pub struct CompileRequest {
     pub ir_hint: Option<Arc<IrBlock>>,
     /// Profile data hint
     pub profile_hint: Option<ProfileHint>,
+    /// Guest code bytes (copied from memory at request time)
+    /// This allows async compilation without holding memory lock
+    pub guest_code: Vec<u8>,
 }
 
 /// Profile hint for guided compilation
@@ -172,7 +180,7 @@ pub struct ProfileHint {
 }
 
 impl CompileRequest {
-    pub fn new_s1(rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64) -> Self {
+    pub fn new_s1(rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64, guest_code: Vec<u8>) -> Self {
         Self {
             rip,
             target_tier: CompileTier::S1,
@@ -184,10 +192,11 @@ impl CompileRequest {
             priority: CompilePriority::from_stats(exec_count, CompileTier::Interpreter),
             ir_hint: None,
             profile_hint: None,
+            guest_code,
         }
     }
     
-    pub fn new_s2(rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64, ir: Option<Arc<IrBlock>>) -> Self {
+    pub fn new_s2(rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64, ir: Option<Arc<IrBlock>>, guest_code: Vec<u8>) -> Self {
         Self {
             rip,
             target_tier: CompileTier::S2,
@@ -199,6 +208,7 @@ impl CompileRequest {
             priority: CompilePriority::from_stats(exec_count, CompileTier::S1),
             ir_hint: ir,
             profile_hint: None,
+            guest_code,
         }
     }
     
@@ -422,6 +432,66 @@ impl AsyncCompileStats {
 }
 
 // ============================================================================
+// Compiler Context - Shared compilation infrastructure
+// ============================================================================
+
+/// Compiler context shared between worker threads
+/// 
+/// Contains all components needed to compile guest code.
+/// Each component is thread-safe (either Send+Sync or internally synchronized).
+pub struct CompilerContext {
+    /// x86 decoder (stateless, thread-safe)
+    pub decoder: X86Decoder,
+    /// S1 quick compiler (stateless, thread-safe)
+    pub s1_compiler: S1Compiler,
+    /// S2 optimizing compiler (stateless, thread-safe)
+    pub s2_compiler: S2Compiler,
+    /// Native code generator (stateless, thread-safe)
+    pub codegen: CodeGen,
+    /// Profile database (internally synchronized)
+    pub profile_db: Arc<ProfileDb>,
+}
+
+impl CompilerContext {
+    /// Create new compiler context with default settings
+    pub fn new(profile_db: Arc<ProfileDb>) -> Self {
+        Self {
+            decoder: X86Decoder::new(),
+            s1_compiler: S1Compiler::new(),
+            s2_compiler: S2Compiler::new(),
+            codegen: CodeGen::new(),
+            profile_db,
+        }
+    }
+    
+    /// Compile a block with S1 (quick) compiler
+    pub fn compile_s1(&self, guest_code: &[u8], rip: u64) -> JitResult<(Vec<u8>, u32, Arc<IrBlock>)> {
+        let s1_block = self.s1_compiler.compile(guest_code, rip, &self.decoder, &self.profile_db)?;
+        let native = s1_block.native.clone();
+        let guest_instrs: u32 = s1_block.ir.blocks.iter()
+            .map(|bb| bb.instrs.len() as u32)
+            .sum();
+        let ir = Arc::new(s1_block.ir);
+        Ok((native, guest_instrs, ir))
+    }
+    
+    /// Compile a block with S2 (optimizing) compiler
+    pub fn compile_s2(&self, guest_code: &[u8], rip: u64, ir_hint: Option<&IrBlock>) -> JitResult<(Vec<u8>, u32, Arc<IrBlock>)> {
+        // First get S1 output (or use hint)
+        let s1_block = self.s1_compiler.compile(guest_code, rip, &self.decoder, &self.profile_db)?;
+        
+        // Then optimize with S2
+        let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
+        let native = s2_block.native.clone();
+        let guest_instrs: u32 = s2_block.ir.blocks.iter()
+            .map(|bb| bb.instrs.len() as u32)
+            .sum();
+        let ir = Arc::new(s2_block.ir);
+        Ok((native, guest_instrs, ir))
+    }
+}
+
+// ============================================================================
 // Async JIT Runtime
 // ============================================================================
 
@@ -442,6 +512,8 @@ pub struct AsyncJitRuntime {
     shutdown: Arc<AtomicBool>,
     /// Compilation callback
     callback: Arc<dyn CompileCallback>,
+    /// Compiler context (shared between workers)
+    compiler: Arc<CompilerContext>,
     /// Statistics
     pub stats: Arc<AsyncCompileStats>,
     /// Worker count
@@ -452,6 +524,7 @@ impl AsyncJitRuntime {
     /// Create a new async JIT runtime
     pub fn new(
         callback: Arc<dyn CompileCallback>,
+        compiler: Arc<CompilerContext>,
         worker_count: Option<usize>,
     ) -> Self {
         let count = worker_count.unwrap_or_else(|| {
@@ -468,6 +541,7 @@ impl AsyncJitRuntime {
             workers: Vec::with_capacity(count),
             shutdown: Arc::new(AtomicBool::new(false)),
             callback,
+            compiler,
             stats: Arc::new(AsyncCompileStats::default()),
             worker_count: count,
         }
@@ -483,12 +557,13 @@ impl AsyncJitRuntime {
             let in_flight = Arc::clone(&self.in_flight);
             let shutdown = Arc::clone(&self.shutdown);
             let callback = Arc::clone(&self.callback);
+            let compiler = Arc::clone(&self.compiler);
             let stats = Arc::clone(&self.stats);
             
             let handle = thread::Builder::new()
                 .name(format!("jit-worker-{}", i))
                 .spawn(move || {
-                    worker_loop(i, queue, queue_cv, in_flight, shutdown, callback, stats);
+                    worker_loop(i, queue, queue_cv, in_flight, shutdown, callback, compiler, stats);
                 })
                 .expect("Failed to spawn JIT worker thread");
             
@@ -534,14 +609,14 @@ impl AsyncJitRuntime {
         true
     }
     
-    /// Submit S1 compilation request
-    pub fn request_s1(&self, rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64) -> bool {
-        self.submit(CompileRequest::new_s1(rip, guest_size, guest_checksum, exec_count))
+    /// Submit S1 compilation request with guest code
+    pub fn request_s1(&self, rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64, guest_code: Vec<u8>) -> bool {
+        self.submit(CompileRequest::new_s1(rip, guest_size, guest_checksum, exec_count, guest_code))
     }
     
-    /// Submit S2 compilation request
-    pub fn request_s2(&self, rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64, ir: Option<Arc<IrBlock>>) -> bool {
-        self.submit(CompileRequest::new_s2(rip, guest_size, guest_checksum, exec_count, ir))
+    /// Submit S2 compilation request with guest code
+    pub fn request_s2(&self, rip: u64, guest_size: u32, guest_checksum: u64, exec_count: u64, ir: Option<Arc<IrBlock>>, guest_code: Vec<u8>) -> bool {
+        self.submit(CompileRequest::new_s2(rip, guest_size, guest_checksum, exec_count, ir, guest_code))
     }
     
     /// Cancel a pending request (if not yet started)
@@ -631,6 +706,7 @@ fn worker_loop(
     in_flight: Arc<RwLock<HashMap<u64, u64>>>,
     shutdown: Arc<AtomicBool>,
     callback: Arc<dyn CompileCallback>,
+    compiler: Arc<CompilerContext>,
     stats: Arc<AsyncCompileStats>,
 ) {
     log::debug!("[AsyncJIT] Worker {} started", worker_id);
@@ -682,9 +758,9 @@ fn worker_loop(
         
         stats.active_workers.fetch_add(1, Ordering::Relaxed);
         
-        // Compile
+        // Compile using real compiler
         let start = Instant::now();
-        let result = compile_block(worker_id, &request);
+        let result = compile_block_with_context(worker_id, &request, &compiler);
         let compile_time = start.elapsed();
         
         // Remove from in-flight
@@ -716,53 +792,63 @@ fn worker_loop(
     log::debug!("[AsyncJIT] Worker {} stopped", worker_id);
 }
 
-/// Compile a single block
-fn compile_block(_worker_id: usize, request: &CompileRequest) -> CompileResult {
-    // TODO: Integrate with actual compiler
-    // This is a placeholder that will be wired up to S1/S2 compilers
-    
+/// Compile a single block using real compilers
+fn compile_block_with_context(
+    _worker_id: usize, 
+    request: &CompileRequest,
+    compiler: &CompilerContext,
+) -> CompileResult {
     let start = Instant::now();
     
     match request.target_tier {
         CompileTier::S1 => {
             // S1 compilation - quick baseline
-            // In real implementation: decode → IR → basic codegen
-            
-            // Placeholder: generate NOP sled + RET
-            let native_code = vec![
-                0x90, 0x90, 0x90, 0x90, // NOP padding
-                0xC3, // RET
-            ];
-            
-            CompileResult::success(
-                request.request_id,
-                request.rip,
-                CompileTier::S1,
-                native_code,
-                1, // guest_instrs
-                start.elapsed(),
-                None,
-            )
+            match compiler.compile_s1(&request.guest_code, request.rip) {
+                Ok((native_code, guest_instrs, ir)) => {
+                    CompileResult::success(
+                        request.request_id,
+                        request.rip,
+                        CompileTier::S1,
+                        native_code,
+                        guest_instrs,
+                        start.elapsed(),
+                        Some(ir),
+                    )
+                }
+                Err(e) => {
+                    CompileResult::failure(
+                        request.request_id,
+                        request.rip,
+                        CompileTier::S1,
+                        e,
+                    )
+                }
+            }
         }
         CompileTier::S2 => {
             // S2 compilation - optimizing
-            // In real implementation: use IR hint if available, apply optimizations
-            
-            // Placeholder
-            let native_code = vec![
-                0x90, 0x90, 0x90, 0x90, // NOP padding
-                0xC3, // RET
-            ];
-            
-            CompileResult::success(
-                request.request_id,
-                request.rip,
-                CompileTier::S2,
-                native_code,
-                1,
-                start.elapsed(),
-                request.ir_hint.clone(),
-            )
+            let ir_hint = request.ir_hint.as_ref().map(|arc| arc.as_ref());
+            match compiler.compile_s2(&request.guest_code, request.rip, ir_hint) {
+                Ok((native_code, guest_instrs, ir)) => {
+                    CompileResult::success(
+                        request.request_id,
+                        request.rip,
+                        CompileTier::S2,
+                        native_code,
+                        guest_instrs,
+                        start.elapsed(),
+                        Some(ir),
+                    )
+                }
+                Err(e) => {
+                    CompileResult::failure(
+                        request.request_id,
+                        request.rip,
+                        CompileTier::S2,
+                        e,
+                    )
+                }
+            }
         }
         CompileTier::Interpreter => {
             CompileResult::failure(
@@ -804,11 +890,15 @@ mod tests {
         }
     }
     
+    fn dummy_guest_code() -> Vec<u8> {
+        vec![0x90, 0x90, 0x90, 0xC3] // NOP NOP NOP RET
+    }
+    
     #[test]
     fn test_priority_ordering() {
-        let r1 = CompileRequest::new_s1(0x1000, 100, 0, 10);
-        let r2 = CompileRequest::new_s1(0x2000, 100, 0, 100);
-        let r3 = CompileRequest::new_s1(0x3000, 100, 0, 1000);
+        let r1 = CompileRequest::new_s1(0x1000, 100, 0, 10, dummy_guest_code());
+        let r2 = CompileRequest::new_s1(0x2000, 100, 0, 100, dummy_guest_code());
+        let r3 = CompileRequest::new_s1(0x3000, 100, 0, 1000, dummy_guest_code());
         
         assert!(r3 > r2);
         assert!(r2 > r1);
@@ -817,17 +907,19 @@ mod tests {
     #[test]
     fn test_async_runtime_basic() {
         let callback = Arc::new(CountingCallback { count: AtomicUsize::new(0) });
-        let mut runtime = AsyncJitRuntime::new(callback.clone(), Some(2));
+        let profile_db = Arc::new(ProfileDb::new(1000));
+        let compiler = Arc::new(CompilerContext::new(profile_db));
+        let mut runtime = AsyncJitRuntime::new(callback.clone(), compiler, Some(2));
         
         runtime.start();
         
         // Submit some requests
-        runtime.request_s1(0x1000, 100, 12345, 50);
-        runtime.request_s1(0x2000, 100, 12346, 100);
-        runtime.request_s1(0x3000, 100, 12347, 200);
+        runtime.request_s1(0x1000, 100, 12345, 50, dummy_guest_code());
+        runtime.request_s1(0x2000, 100, 12346, 100, dummy_guest_code());
+        runtime.request_s1(0x3000, 100, 12347, 200, dummy_guest_code());
         
         // Wait for completion
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(200));
         
         // Check callbacks were invoked
         assert!(callback.count.load(Ordering::Relaxed) >= 1);
@@ -838,15 +930,17 @@ mod tests {
     #[test]
     fn test_deduplication() {
         let callback = Arc::new(CountingCallback { count: AtomicUsize::new(0) });
-        let runtime = AsyncJitRuntime::new(callback.clone(), Some(1));
+        let profile_db = Arc::new(ProfileDb::new(1000));
+        let compiler = Arc::new(CompilerContext::new(profile_db));
+        let runtime = AsyncJitRuntime::new(callback.clone(), compiler, Some(1));
         
         // Don't start workers - just test queue behavior
         
         // First request should succeed
-        assert!(runtime.submit(CompileRequest::new_s1(0x1000, 100, 0, 50)));
+        assert!(runtime.submit(CompileRequest::new_s1(0x1000, 100, 0, 50, dummy_guest_code())));
         
         // Duplicate should be rejected
-        assert!(!runtime.submit(CompileRequest::new_s1(0x1000, 100, 0, 50)));
+        assert!(!runtime.submit(CompileRequest::new_s1(0x1000, 100, 0, 50, dummy_guest_code())));
     }
     
     #[test]

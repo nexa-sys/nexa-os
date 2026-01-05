@@ -83,7 +83,7 @@ pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
 pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock};
 pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
-pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot};
+pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
 pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
 
@@ -472,6 +472,8 @@ pub struct JitConfig {
     pub max_inline_depth: u32,
     /// Enable speculative optimizations
     pub speculative_opts: bool,
+    /// Enable async (Zero-STW) compilation, eviction, and restoration
+    pub async_compilation: bool,
 }
 
 /// Get system memory size in bytes
@@ -525,6 +527,7 @@ impl Default for JitConfig {
             loop_unrolling: true,
             max_inline_depth: 9,
             speculative_opts: true,
+            async_compilation: true,                    // Zero-STW async JIT enabled by default
         }
     }
 }
@@ -669,15 +672,15 @@ pub struct JitEngine {
     /// Native code generator
     codegen: CodeGen,
     /// Code cache (guest RIP → compiled code)
-    code_cache: CodeCache,
+    code_cache: Arc<CodeCache>,
     /// Block metadata
     blocks: RwLock<HashMap<u64, Arc<BlockMeta>>>,
     /// Profile database
-    profile_db: ProfileDb,
+    profile_db: Arc<ProfileDb>,
     /// NReady! cache
-    nready: Option<NReadyCache>,
+    nready: Option<Arc<NReadyCache>>,
     /// Hotness tracker for smart eviction
-    hotness_tracker: HotnessTracker,
+    hotness_tracker: Arc<HotnessTracker>,
     /// Statistics
     stats: Arc<JitStats>,
     /// Is engine running?
@@ -688,6 +691,16 @@ pub struct JitEngine {
     logged_first_s2: AtomicBool,
     /// Last NReady! save time (for periodic saves)
     last_nready_save: std::sync::atomic::AtomicU64,
+    
+    // ========== Async JIT Infrastructure ==========
+    /// Async compilation runtime (Zero-STW)
+    async_runtime: Option<std::sync::Mutex<AsyncJitRuntime>>,
+    /// Async eviction manager (background cache management)
+    async_eviction: Option<Arc<std::sync::Mutex<AsyncEvictionManager>>>,
+    /// Async restore manager (prefetch-based restoration)
+    async_restore: Option<Arc<std::sync::Mutex<AsyncRestoreManager>>>,
+    /// Use async compilation path (vs legacy sync)
+    async_enabled: AtomicBool,
 }
 
 impl JitEngine {
@@ -716,12 +729,79 @@ impl JitEngine {
             if let Err(e) = cache.ensure_evicted_dir() {
                 log::warn!("[NReady!] Failed to create evicted dir: {:?}", e);
             }
-            Some(cache)
+            Some(Arc::new(cache))
         } else {
             None
         };
         
-        let engine = Self {
+        let profile_db = Arc::new(ProfileDb::new(config.profile_db_size));
+        let hotness_tracker = Arc::new(HotnessTracker::new());
+        let code_cache = Arc::new(CodeCache::new_dynamic(
+            config.code_cache_initial_size as u64,
+            config.code_cache_max_size as u64,
+            config.code_cache_growth_factor,
+        ));
+        
+        // Create async compilation infrastructure
+        let async_enabled = config.async_compilation;
+        let (async_runtime, async_eviction, async_restore) = if async_enabled {
+            // Create compiler context for workers
+            let compiler_ctx = Arc::new(CompilerContext::new(profile_db.clone()));
+            
+            // Create callback that installs to code cache
+            let installer = Arc::new(CodeCacheInstaller::new(code_cache.clone()));
+            
+            // Create async runtime with worker threads
+            let mut runtime = AsyncJitRuntime::new(
+                installer.clone(),
+                compiler_ctx,
+                None, // auto-detect worker count
+            );
+            runtime.start();
+            
+            // Create async eviction and restore managers (requires NReady!)
+            let (eviction_mgr, restore_mgr) = if let Some(ref nready_cache) = nready {
+                // Create async eviction manager
+                let mut eviction = AsyncEvictionManager::new(
+                    code_cache.clone(),
+                    nready_cache.clone(),
+                    hotness_tracker.clone(),
+                );
+                eviction.start();
+                
+                // Create restore callback - installs restored code to cache
+                let restore_installer = Arc::new(async_restore::CacheRestoreInstaller::new(
+                    code_cache.clone(),
+                    hotness_tracker.clone(),
+                ));
+                
+                // Create async restore manager
+                let mut restore = AsyncRestoreManager::new(
+                    nready_cache.clone(),
+                    hotness_tracker.clone(),
+                    restore_installer,
+                    None, // auto-detect worker count
+                );
+                restore.start();
+                
+                (Some(Arc::new(std::sync::Mutex::new(eviction))), Some(Arc::new(std::sync::Mutex::new(restore))))
+            } else {
+                log::warn!("[JIT] Async eviction/restore disabled: NReady! not enabled");
+                (None, None)
+            };
+            
+            log::info!("[JIT] Async JIT enabled: Zero-STW compilation, eviction, restoration");
+            
+            (
+                Some(std::sync::Mutex::new(runtime)),
+                eviction_mgr,
+                restore_mgr,
+            )
+        } else {
+            (None, None, None)
+        };
+        
+        let mut engine = Self {
             decoder: X86Decoder::new(),
             interpreter: Interpreter::new(),
             s1_compiler: S1Compiler::new(),
@@ -732,22 +812,24 @@ impl JitEngine {
                 ..Default::default()
             }),
             codegen: CodeGen::new(),
-            code_cache: CodeCache::new_dynamic(
-                config.code_cache_initial_size as u64,
-                config.code_cache_max_size as u64,
-                config.code_cache_growth_factor,
-            ),
+            code_cache,
             blocks: RwLock::new(HashMap::new()),
-            profile_db: ProfileDb::new(config.profile_db_size),
+            profile_db,
             nready,
-            hotness_tracker: HotnessTracker::new(),
+            hotness_tracker,
             stats: Arc::new(JitStats::default()),
             running: AtomicBool::new(false),
             logged_first_s1: AtomicBool::new(false),
             logged_first_s2: AtomicBool::new(false),
             last_nready_save: std::sync::atomic::AtomicU64::new(0),
+            async_runtime,
+            async_eviction,
+            async_restore,
+            async_enabled: AtomicBool::new(async_enabled),
             config,
         };
+        
+        // Async managers are already started during creation above
         
         // Try to load NReady! cache for instant warmup
         if engine.nready.is_some() {
@@ -792,8 +874,15 @@ impl JitEngine {
     /// 1. Checks code cache for compiled code
     /// 2. Falls back to interpreter if not compiled
     /// 3. Collects profile data
-    /// 4. Triggers compilation when thresholds are met
+    /// 4. Triggers compilation when thresholds are met (async or sync)
     /// 5. Periodically saves NReady! cache
+    ///
+    /// ## Zero-STW Async Mode
+    /// When async_compilation is enabled:
+    /// - Compilation requests are queued and processed by background workers
+    /// - VM continues interpreting while compilation happens in parallel
+    /// - Compiled code becomes available on next execution (no pause)
+    /// - Eviction and restoration also happen asynchronously
     pub fn execute(&self, cpu: &VirtualCpu, memory: &AddressSpace) -> JitResult<ExecuteResult> {
         self.running.store(true, Ordering::SeqCst);
         
@@ -824,27 +913,161 @@ impl JitEngine {
         // Record execution in hotness tracker
         self.hotness_tracker.record_execution(rip);
         
-        // Check if we need to upgrade from S1 to S2
-        if tier == ExecutionTier::S2 && current_tier != ExecutionTier::S2 {
-            self.compile_s2(cpu, memory, rip, &block)?;
-        }
-        
-        // Check code cache for compiled code
+        // Check code cache for compiled code (cache hit = fast path)
         if let Some(entry) = self.code_cache.lookup(rip) {
             self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
             log::trace!("[JIT] Cache hit at {:#x}, executing native", rip);
+            
+            // Even with cache hit, check if we should submit S2 promotion (async only)
+            if self.async_enabled.load(Ordering::Relaxed) 
+                && tier == ExecutionTier::S2 
+                && current_tier != ExecutionTier::S2 
+            {
+                self.submit_async_s2(memory, rip, invocations, &block);
+            }
+            
             return self.execute_native(cpu, memory, entry);
         }
         
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
         
         // Try to restore from disk if this block was previously evicted
-        if self.try_restore_block(rip)? {
-            // Block restored, execute it
-            if let Some(code_ptr) = self.code_cache.lookup(rip) {
-                log::debug!("[JIT] Executing restored block {:#x}", rip);
-                return self.execute_native(cpu, memory, code_ptr);
+        if self.async_enabled.load(Ordering::Relaxed) {
+            // Async path: submit restore request (non-blocking)
+            self.submit_async_restore(rip);
+        } else {
+            // Sync path: try immediate restore
+            if self.try_restore_block(rip)? {
+                if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                    log::debug!("[JIT] Executing restored block {:#x}", rip);
+                    return self.execute_native(cpu, memory, code_ptr);
+                }
             }
+        }
+        
+        // Use async or sync compilation path based on config
+        if self.async_enabled.load(Ordering::Relaxed) {
+            self.execute_async_path(cpu, memory, rip, invocations, tier, &block)
+        } else {
+            self.execute_sync_path(cpu, memory, rip, tier, &block)
+        }
+    }
+    
+    /// Execute using async (Zero-STW) compilation path
+    ///
+    /// Key difference from sync: compilation is non-blocking.
+    /// VM continues interpreting while compilation proceeds in background.
+    fn execute_async_path(
+        &self,
+        cpu: &VirtualCpu,
+        memory: &AddressSpace,
+        rip: u64,
+        invocations: u64,
+        tier: ExecutionTier,
+        block: &BlockMeta,
+    ) -> JitResult<ExecuteResult> {
+        match tier {
+            ExecutionTier::Interpreter => {
+                self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);
+                self.interpret(cpu, memory, rip)
+            }
+            ExecutionTier::S1 => {
+                // Submit async S1 compilation request (non-blocking)
+                self.submit_async_s1(memory, rip, invocations);
+                
+                // Continue interpreting while compilation proceeds
+                self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);
+                self.interpret(cpu, memory, rip)
+            }
+            ExecutionTier::S2 => {
+                // If we have S1, use it. Otherwise submit S1 first.
+                if block.get_tier() == ExecutionTier::S1 {
+                    // Submit S2 promotion
+                    self.submit_async_s2(memory, rip, invocations, block);
+                    
+                    // Execute S1 (if available)
+                    if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                        self.stats.s1_execs.fetch_add(1, Ordering::Relaxed);
+                        return self.execute_native(cpu, memory, code_ptr);
+                    }
+                }
+                
+                // Fall back to interpreter
+                self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);
+                self.interpret(cpu, memory, rip)
+            }
+        }
+    }
+    
+    /// Submit async S1 compilation request (non-blocking)
+    fn submit_async_s1(&self, memory: &AddressSpace, rip: u64, exec_count: u64) {
+        if let Some(ref runtime_mutex) = self.async_runtime {
+            // Copy guest code bytes for async compilation
+            let mut guest_code = vec![0u8; 4096]; // Max block size
+            for (i, byte) in guest_code.iter_mut().enumerate() {
+                *byte = memory.read_u8(rip + i as u64);
+            }
+            
+            let guest_checksum = cache::compute_checksum(&guest_code);
+            
+            if let Ok(runtime) = runtime_mutex.lock() {
+                runtime.request_s1(
+                    rip,
+                    guest_code.len() as u32,
+                    guest_checksum,
+                    exec_count,
+                    guest_code,
+                );
+            }
+        }
+    }
+    
+    /// Submit async S2 compilation request (non-blocking)
+    fn submit_async_s2(&self, memory: &AddressSpace, rip: u64, exec_count: u64, _block: &BlockMeta) {
+        if let Some(ref runtime_mutex) = self.async_runtime {
+            // Copy guest code bytes for async compilation
+            let mut guest_code = vec![0u8; 4096];
+            for (i, byte) in guest_code.iter_mut().enumerate() {
+                *byte = memory.read_u8(rip + i as u64);
+            }
+            
+            let guest_checksum = cache::compute_checksum(&guest_code);
+            
+            // TODO: Pass IR hint from existing S1 block if available
+            if let Ok(runtime) = runtime_mutex.lock() {
+                runtime.request_s2(
+                    rip,
+                    guest_code.len() as u32,
+                    guest_checksum,
+                    exec_count,
+                    None, // IR hint
+                    guest_code,
+                );
+            }
+        }
+    }
+    
+    /// Submit async restore request (non-blocking)
+    fn submit_async_restore(&self, rip: u64) {
+        if let Some(ref restore_mgr_mutex) = self.async_restore {
+            if let Ok(restore_mgr) = restore_mgr_mutex.lock() {
+                restore_mgr.request_restore(rip, true); // true = on-demand
+            }
+        }
+    }
+    
+    /// Execute using legacy sync compilation path
+    fn execute_sync_path(
+        &self,
+        cpu: &VirtualCpu,
+        memory: &AddressSpace,
+        rip: u64,
+        tier: ExecutionTier,
+        block: &BlockMeta,
+    ) -> JitResult<ExecuteResult> {
+        // Check if we need to upgrade from S1 to S2
+        if tier == ExecutionTier::S2 && block.get_tier() != ExecutionTier::S2 {
+            self.compile_s2(cpu, memory, rip, block)?;
         }
         
         match tier {
@@ -855,7 +1078,7 @@ impl JitEngine {
             ExecutionTier::S1 => {
                 // Compile with S1 if not already in code cache
                 log::debug!("[JIT] Compiling S1 for block {:#x}", rip);
-                self.compile_s1(cpu, memory, rip, &block)?;
+                self.compile_s1(cpu, memory, rip, block)?;
                 self.stats.s1_execs.fetch_add(1, Ordering::Relaxed);
                 // Execute from code cache (compile_s1 stores there)
                 if let Some(code_ptr) = self.code_cache.lookup(rip) {
@@ -868,7 +1091,7 @@ impl JitEngine {
             }
             ExecutionTier::S2 => {
                 // Compile with S2 if not already in code cache
-                self.compile_s2(cpu, memory, rip, &block)?;
+                self.compile_s2(cpu, memory, rip, block)?;
                 self.stats.s2_execs.fetch_add(1, Ordering::Relaxed);
                 // Execute from code cache
                 if let Some(code_ptr) = self.code_cache.lookup(rip) {
@@ -1512,9 +1735,41 @@ impl JitEngine {
 
     /// Shutdown the JIT engine
     /// 
-    /// This saves NReady! cache if auto_save is enabled.
+    /// This:
+    /// 1. Stops async compilation workers
+    /// 2. Stops async eviction manager
+    /// 3. Stops async restore manager
+    /// 4. Saves NReady! cache if auto_save is enabled
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::SeqCst);
+        
+        // Shutdown async components first
+        if self.async_enabled.load(Ordering::Relaxed) {
+            log::info!("[JIT] Shutting down async JIT infrastructure...");
+            
+            // Shutdown compilation runtime
+            if let Some(ref runtime_mutex) = self.async_runtime {
+                if let Ok(mut runtime) = runtime_mutex.lock() {
+                    runtime.shutdown();
+                }
+            }
+            
+            // Shutdown eviction manager
+            if let Some(ref eviction_mutex) = self.async_eviction {
+                if let Ok(mut eviction) = eviction_mutex.lock() {
+                    eviction.shutdown();
+                }
+            }
+            
+            // Shutdown restore manager
+            if let Some(ref restore_mutex) = self.async_restore {
+                if let Ok(mut restore) = restore_mutex.lock() {
+                    restore.shutdown();
+                }
+            }
+            
+            log::info!("[JIT] Async JIT infrastructure shutdown complete");
+        }
         
         if self.config.nready_enabled && self.config.nready_auto_save {
             log::info!("[JIT] Saving NReady! cache on shutdown...");
@@ -1525,10 +1780,64 @@ impl JitEngine {
             }
         }
     }
+    
+    /// Check if async JIT is enabled
+    pub fn is_async_enabled(&self) -> bool {
+        self.async_enabled.load(Ordering::Relaxed)
+    }
+    
+    /// Get async runtime statistics (if enabled)
+    pub fn async_stats(&self) -> Option<AsyncStatsSnapshot> {
+        if let Some(ref runtime_mutex) = self.async_runtime {
+            if let Ok(runtime) = runtime_mutex.lock() {
+                return Some(runtime.get_stats());
+            }
+        }
+        None
+    }
+    
+    /// Get async eviction statistics (if enabled)
+    pub fn async_eviction_stats(&self) -> Option<EvictionStatsSnapshot> {
+        if let Some(ref eviction_mutex) = self.async_eviction {
+            if let Ok(eviction) = eviction_mutex.lock() {
+                return Some(eviction.get_stats());
+            }
+        }
+        None
+    }
+    
+    /// Get async restore statistics (if enabled)
+    pub fn async_restore_stats(&self) -> Option<RestoreStatsSnapshot> {
+        if let Some(ref restore_mutex) = self.async_restore {
+            if let Ok(restore) = restore_mutex.lock() {
+                return Some(restore.get_stats());
+            }
+        }
+        None
+    }
 }
 
 impl Drop for JitEngine {
     fn drop(&mut self) {
+        // Shutdown async infrastructure first
+        if self.async_enabled.load(Ordering::Relaxed) {
+            if let Some(ref runtime_mutex) = self.async_runtime {
+                if let Ok(mut runtime) = runtime_mutex.lock() {
+                    runtime.shutdown();
+                }
+            }
+            if let Some(ref eviction_mutex) = self.async_eviction {
+                if let Ok(mut eviction) = eviction_mutex.lock() {
+                    eviction.shutdown();
+                }
+            }
+            if let Some(ref restore_mutex) = self.async_restore {
+                if let Ok(mut restore) = restore_mutex.lock() {
+                    restore.shutdown();
+                }
+            }
+        }
+        
         // Auto-save NReady! on drop if enabled
         if self.config.nready_enabled && self.config.nready_auto_save {
             log::info!("[JIT] Auto-saving NReady! cache on drop...");
@@ -1824,10 +2133,14 @@ impl AsyncJitOrchestrator {
         cache: Arc<CodeCache>,
         nready: Arc<NReadyCache>,
         hotness: Arc<HotnessTracker>,
+        profile_db: Arc<ProfileDb>,
         config: AsyncJitConfig,
     ) -> Self {
         // Create compile callback
         let compile_callback = Arc::new(async_runtime::CodeCacheInstaller::new(Arc::clone(&cache)));
+        
+        // Create compiler context for workers
+        let compiler_ctx = Arc::new(CompilerContext::new(Arc::clone(&profile_db)));
         
         // Create restore callback
         let restore_callback = Arc::new(async_restore::CacheRestoreInstaller::new(
@@ -1838,6 +2151,7 @@ impl AsyncJitOrchestrator {
         // Build components
         let compile_runtime = async_runtime::AsyncJitRuntime::new(
             compile_callback,
+            compiler_ctx,
             if config.compile_workers == 0 { None } else { Some(config.compile_workers) },
         );
         
@@ -1891,10 +2205,11 @@ impl AsyncJitOrchestrator {
         checksum: u64,
         exec_count: u64,
         tier: CompileTier,
+        guest_code: Vec<u8>,
     ) -> bool {
         match tier {
-            CompileTier::S1 => self.compile_runtime.request_s1(rip, guest_size, checksum, exec_count),
-            CompileTier::S2 => self.compile_runtime.request_s2(rip, guest_size, checksum, exec_count, None),
+            CompileTier::S1 => self.compile_runtime.request_s1(rip, guest_size, checksum, exec_count, guest_code),
+            CompileTier::S2 => self.compile_runtime.request_s2(rip, guest_size, checksum, exec_count, None, guest_code),
             CompileTier::Interpreter => false,
         }
     }
