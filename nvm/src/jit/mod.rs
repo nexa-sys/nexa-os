@@ -26,7 +26,7 @@
 //! │  └─────────────────────────────────────────────────────────────────────┘  │
 //! │                                                                             │
 //! │  ┌─────────────────────────────────────────────────────────────────────┐  │
-//! │  │                       ReadyNow! Cache                                │  │
+//! │  │                        NReady! Cache                                 │  │
 //! │  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                 │  │
 //! │  │  │   Profile    │ │      RI      │ │  Native Code │                 │  │
 //! │  │  │ (Full Compat)│ │(Back Compat) │ │(Gen Compat)  │                 │  │
@@ -61,7 +61,7 @@ pub mod compiler_s2;
 pub mod codegen;
 pub mod profile;
 pub mod cache;
-pub mod readynow;
+pub mod nready;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::HashMap;
@@ -77,7 +77,7 @@ pub use compiler_s2::{S2Compiler, S2Config};
 pub use codegen::CodeGen;
 pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo};
-pub use readynow::{ReadyNowCache, NativeBlockInfo};
+pub use nready::{NReadyCache, NativeBlockInfo};
 
 // ============================================================================
 // JIT CPU State - Direct access structure for native code
@@ -381,7 +381,7 @@ impl ExecutionTier {
     }
 }
 
-/// ReadyNow! persistence format
+/// NReady! persistence format
 /// 
 /// Three formats with different compatibility guarantees:
 /// - Profile: Full forward AND backward compatibility (safest)
@@ -449,14 +449,14 @@ pub struct JitConfig {
     pub code_cache_growth_factor: f64,
     /// Profile database size (entries)
     pub profile_db_size: usize,
-    /// Enable ReadyNow! preloading (default: true)
-    pub readynow_enabled: bool,
-    /// ReadyNow! cache path (default: ~/.nvm/readynow/)
-    pub readynow_path: Option<String>,
-    /// Auto-save ReadyNow! on VM shutdown
-    pub readynow_auto_save: bool,
+    /// Enable NReady! preloading (default: true)
+    pub nready_enabled: bool,
+    /// NReady! cache path (default: ~/.nvm/nready/)
+    pub nready_path: Option<String>,
+    /// Auto-save NReady! on VM shutdown
+    pub nready_auto_save: bool,
     /// Periodic auto-save interval in seconds (0 = disabled, default: 60)
-    pub readynow_save_interval_secs: u64,
+    pub nready_save_interval_secs: u64,
     /// Enable aggressive inlining in S2
     pub aggressive_inlining: bool,
     /// Enable loop unrolling
@@ -488,10 +488,10 @@ fn get_system_memory() -> usize {
 
 impl Default for JitConfig {
     fn default() -> Self {
-        // Default ReadyNow! path: ~/.local/share/nvm/readynow/
-        let readynow_path = dirs::data_local_dir()
+        // Default NReady! path: ~/.local/share/nvm/nready/
+        let nready_path = dirs::data_local_dir()
             .or_else(|| dirs::home_dir().map(|p| p.join(".local").join("share")))
-            .map(|p| p.join("nvm").join("readynow").to_string_lossy().to_string());
+            .map(|p| p.join("nvm").join("nready").to_string_lossy().to_string());
         
         // CodeCache size based on system memory
         // Initial: 20% of system memory, Max: 30% of system memory
@@ -510,10 +510,10 @@ impl Default for JitConfig {
             code_cache_max_size: max_size,
             code_cache_growth_factor: 1.5,              // Grow by 50% each expansion
             profile_db_size: 1_000_000,                 // 1M profile entries
-            readynow_enabled: true,                     // ReadyNow! ON by default
-            readynow_path,                              // ~/.local/share/nvm/readynow/
-            readynow_auto_save: true,                   // Auto-save on shutdown
-            readynow_save_interval_secs: 60,            // Periodic save every 60 seconds
+            nready_enabled: true,                       // NReady! ON by default
+            nready_path,                                // ~/.local/share/nvm/nready/
+            nready_auto_save: true,                     // Auto-save on shutdown
+            nready_save_interval_secs: 60,              // Periodic save every 60 seconds
             aggressive_inlining: true,
             loop_unrolling: true,
             max_inline_depth: 9,
@@ -635,8 +635,8 @@ pub struct JitStats {
     pub cache_hits: AtomicU64,
     /// Cache misses
     pub cache_misses: AtomicU64,
-    /// ReadyNow! loads
-    pub readynow_loads: AtomicU64,
+    /// NReady! loads
+    pub nready_loads: AtomicU64,
     /// Total compilation time (ns)
     pub compilation_time_ns: AtomicU64,
 }
@@ -661,8 +661,8 @@ pub struct JitEngine {
     blocks: RwLock<HashMap<u64, Arc<BlockMeta>>>,
     /// Profile database
     profile_db: ProfileDb,
-    /// ReadyNow! cache
-    readynow: Option<ReadyNowCache>,
+    /// NReady! cache
+    nready: Option<NReadyCache>,
     /// Statistics
     stats: Arc<JitStats>,
     /// Is engine running?
@@ -671,8 +671,8 @@ pub struct JitEngine {
     logged_first_s1: AtomicBool,
     /// Has logged first S2 compilation for this VM?
     logged_first_s2: AtomicBool,
-    /// Last ReadyNow! save time (for periodic saves)
-    last_readynow_save: std::sync::atomic::AtomicU64,
+    /// Last NReady! save time (for periodic saves)
+    last_nready_save: std::sync::atomic::AtomicU64,
 }
 
 impl JitEngine {
@@ -690,13 +690,13 @@ impl JitEngine {
     /// 
     /// # Arguments
     /// * `config` - JIT configuration
-    /// * `vm_id` - Optional VM ID for ReadyNow! cache isolation. If None, uses "default".
+    /// * `vm_id` - Optional VM ID for NReady! cache isolation. If None, uses "default".
     pub fn with_config(config: JitConfig, vm_id: Option<&str>) -> Self {
         let instance_id = vm_id.unwrap_or("default");
-        let readynow = if config.readynow_enabled {
-            let cache_dir = config.readynow_path.clone()
+        let nready = if config.nready_enabled {
+            let cache_dir = config.nready_path.clone()
                 .unwrap_or_else(|| "/tmp/nvm-jit".to_string());
-            Some(ReadyNowCache::new(&cache_dir, instance_id))
+            Some(NReadyCache::new(&cache_dir, instance_id))
         } else {
             None
         };
@@ -719,26 +719,26 @@ impl JitEngine {
             ),
             blocks: RwLock::new(HashMap::new()),
             profile_db: ProfileDb::new(config.profile_db_size),
-            readynow,
+            nready,
             stats: Arc::new(JitStats::default()),
             running: AtomicBool::new(false),
             logged_first_s1: AtomicBool::new(false),
             logged_first_s2: AtomicBool::new(false),
-            last_readynow_save: std::sync::atomic::AtomicU64::new(0),
+            last_nready_save: std::sync::atomic::AtomicU64::new(0),
             config,
         };
         
-        // Try to load ReadyNow! cache for instant warmup
-        if engine.readynow.is_some() {
-            match engine.load_readynow() {
+        // Try to load NReady! cache for instant warmup
+        if engine.nready.is_some() {
+            match engine.load_nready() {
                 Ok(stats) => {
                     if stats.native_blocks_loaded > 0 || stats.profiles_loaded > 0 {
-                        log::info!("[ReadyNow!] Loaded cache: {} native blocks, {} profiles in {}ms",
+                        log::info!("[NReady!] Loaded cache: {} native blocks, {} profiles in {}ms",
                             stats.native_blocks_loaded, stats.profiles_loaded, stats.load_time_ms);
                     }
                 }
                 Err(e) => {
-                    log::debug!("[ReadyNow!] No cache loaded (first run or error): {:?}", e);
+                    log::debug!("[NReady!] No cache loaded (first run or error): {:?}", e);
                 }
             }
         }
@@ -753,11 +753,11 @@ impl JitEngine {
     /// 2. Falls back to interpreter if not compiled
     /// 3. Collects profile data
     /// 4. Triggers compilation when thresholds are met
-    /// 5. Periodically saves ReadyNow! cache
+    /// 5. Periodically saves NReady! cache
     pub fn execute(&self, cpu: &VirtualCpu, memory: &AddressSpace) -> JitResult<ExecuteResult> {
         self.running.store(true, Ordering::SeqCst);
         
-        // Check for periodic ReadyNow! save
+        // Check for periodic NReady! save
         self.maybe_periodic_save();
         
         let rip = cpu.read_rip();
@@ -1060,44 +1060,44 @@ impl JitEngine {
     }
     
     // ========================================================================
-    // ReadyNow! Persistence - Three Formats with Different Compatibility
+    // NReady! Persistence - Three Formats with Different Compatibility
     // ========================================================================
     
-    /// Load ReadyNow! cache with tiered loading strategy
+    /// Load NReady! cache with tiered loading strategy
     /// 
     /// Loading priority:
     /// 1. Native code (instant, same-generation only)
     /// 2. RI (backward compatible, needs codegen)
     /// 3. Profile (full compat, guides future compilation)
-    pub fn load_readynow(&self) -> JitResult<ReadyNowStats> {
-        let readynow = self.readynow.as_ref()
-            .ok_or_else(|| JitError::CompilationError("ReadyNow! not enabled".to_string()))?;
+    pub fn load_nready(&self) -> JitResult<NReadyStats> {
+        let nready = self.nready.as_ref()
+            .ok_or_else(|| JitError::CompilationError("NReady! not enabled".to_string()))?;
         
-        let mut stats = ReadyNowStats::default();
+        let mut stats = NReadyStats::default();
         let start = std::time::Instant::now();
         
         // 1. Try loading native code first (zero warmup if version matches)
-        match readynow.load_native() {
+        match nready.load_native() {
             Ok(Some(native_blocks)) => {
                 stats.native_blocks_loaded = native_blocks.len();
                 // Install native blocks directly into code cache
                 for (rip, block_info) in native_blocks {
                     if let Err(e) = self.install_native_block(rip, block_info) {
-                        log::warn!("[ReadyNow!] Failed to install native block {:#x}: {:?}", rip, e);
+                        log::warn!("[NReady!] Failed to install native block {:#x}: {:?}", rip, e);
                     }
                 }
-                log::debug!("[ReadyNow!] Installed {} native code blocks", stats.native_blocks_loaded);
+                log::debug!("[NReady!] Installed {} native code blocks", stats.native_blocks_loaded);
             }
             Ok(None) => {
-                log::debug!("[ReadyNow!] Native cache version mismatch, will recompile");
+                log::debug!("[NReady!] Native cache version mismatch, will recompile");
             }
             Err(e) => {
-                log::debug!("[ReadyNow!] No native cache found: {:?}", e);
+                log::debug!("[NReady!] No native cache found: {:?}", e);
             }
         }
         
         // 2. Load RI blocks (backward compatible)
-        match readynow.load_ri() {
+        match nready.load_ri() {
             Ok(ir_blocks) => {
                 stats.ir_blocks_loaded = ir_blocks.len();
                 // Store IR blocks for on-demand compilation
@@ -1107,34 +1107,34 @@ impl JitEngine {
                     // Note: We can't modify Arc<BlockMeta> directly, IR caching needs redesign
                     // For now, IR blocks will be recompiled on demand
                 }
-                log::debug!("[ReadyNow!] Loaded {} IR blocks", stats.ir_blocks_loaded);
+                log::debug!("[NReady!] Loaded {} IR blocks", stats.ir_blocks_loaded);
             }
             Err(e) => {
-                log::debug!("[ReadyNow!] No RI cache found: {:?}", e);
+                log::debug!("[NReady!] No RI cache found: {:?}", e);
             }
         }
         
         // 3. Always load profile (full compat, guides compilation)
-        match readynow.load_profile() {
+        match nready.load_profile() {
             Ok(profile) => {
                 stats.profiles_loaded = profile.block_count();
                 // Merge profile data to guide hot path detection
                 self.profile_db.merge(&profile);
-                log::debug!("[ReadyNow!] Loaded {} profile entries", stats.profiles_loaded);
+                log::debug!("[NReady!] Loaded {} profile entries", stats.profiles_loaded);
             }
             Err(e) => {
-                log::debug!("[ReadyNow!] No profile cache found: {:?}", e);
+                log::debug!("[NReady!] No profile cache found: {:?}", e);
             }
         }
         
         stats.load_time_ms = start.elapsed().as_millis() as u64;
-        self.stats.readynow_loads.fetch_add(1, Ordering::Relaxed);
+        self.stats.nready_loads.fetch_add(1, Ordering::Relaxed);
         
         Ok(stats)
     }
     
-    /// Install a native code block from ReadyNow! cache into code cache
-    fn install_native_block(&self, rip: u64, info: readynow::NativeBlockInfo) -> JitResult<()> {
+    /// Install a native code block from NReady! cache into code cache
+    fn install_native_block(&self, rip: u64, info: nready::NativeBlockInfo) -> JitResult<()> {
         // Allocate executable memory and copy the native code
         let host_ptr = self.code_cache.allocate_code(&info.native_code)
             .ok_or(JitError::CodeCacheFull)?;
@@ -1168,20 +1168,20 @@ impl JitEngine {
         Ok(())
     }
     
-    /// Save ReadyNow! cache in specified format
+    /// Save NReady! cache in specified format
     /// 
     /// Format compatibility guarantees:
     /// - Profile: Full forward AND backward compatibility
     /// - RI: Backward compatible (old RI works on new JIT)
     /// - Native: Same-generation only (version must match exactly)
-    pub fn save_readynow(&self, format: PersistFormat) -> JitResult<()> {
-        let readynow = self.readynow.as_ref()
-            .ok_or_else(|| JitError::CompilationError("ReadyNow! not enabled".to_string()))?;
+    pub fn save_nready(&self, format: PersistFormat) -> JitResult<()> {
+        let nready = self.nready.as_ref()
+            .ok_or_else(|| JitError::CompilationError("NReady! not enabled".to_string()))?;
         
         match format {
             PersistFormat::Profile => {
                 // Profile: Always safe, full compatibility
-                readynow.save_profile(&self.profile_db)
+                nready.save_profile(&self.profile_db)
             }
             PersistFormat::Ri => {
                 // RI: Backward compatible IR
@@ -1192,31 +1192,31 @@ impl JitEngine {
                         meta.ir.as_ref().map(|ir| (*rip, (**ir).clone()))
                     })
                     .collect();
-                readynow.save_ri(&ir_blocks)
+                nready.save_ri(&ir_blocks)
             }
             PersistFormat::Native => {
                 // Native: Same-generation only
                 // Get compiled blocks from code_cache (this is where they actually live!)
                 let persist_blocks = self.code_cache.get_all_blocks_for_persist();
-                readynow.save_native_from_persist(&persist_blocks)
+                nready.save_native_from_persist(&persist_blocks)
             }
             PersistFormat::All => {
                 // Save all formats for maximum flexibility
-                self.save_readynow(PersistFormat::Profile)?;
-                self.save_readynow(PersistFormat::Ri)?;
-                self.save_readynow(PersistFormat::Native)?;
+                self.save_nready(PersistFormat::Profile)?;
+                self.save_nready(PersistFormat::Ri)?;
+                self.save_nready(PersistFormat::Native)?;
                 Ok(())
             }
         }
     }
     
-    /// Check if periodic ReadyNow! save is needed and perform it
+    /// Check if periodic NReady! save is needed and perform it
     /// 
     /// This is called periodically from execute() to ensure data is saved
     /// even if the VM crashes or is killed without proper shutdown.
     fn maybe_periodic_save(&self) {
         // Skip if periodic save is disabled
-        if self.config.readynow_save_interval_secs == 0 || !self.config.readynow_enabled {
+        if self.config.nready_save_interval_secs == 0 || !self.config.nready_enabled {
             return;
         }
         
@@ -1226,31 +1226,31 @@ impl JitEngine {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         
-        let last_save = self.last_readynow_save.load(Ordering::Relaxed);
+        let last_save = self.last_nready_save.load(Ordering::Relaxed);
         
         // Check if enough time has passed
         if last_save == 0 {
             // First execution, set initial time
-            self.last_readynow_save.store(now, Ordering::Relaxed);
+            self.last_nready_save.store(now, Ordering::Relaxed);
             return;
         }
         
-        if now.saturating_sub(last_save) >= self.config.readynow_save_interval_secs {
+        if now.saturating_sub(last_save) >= self.config.nready_save_interval_secs {
             // Try to update atomically (avoid concurrent saves)
-            if self.last_readynow_save.compare_exchange(
+            if self.last_nready_save.compare_exchange(
                 last_save,
                 now,
                 Ordering::SeqCst,
                 Ordering::Relaxed
             ).is_ok() {
                 // We won the race, do the save
-                log::info!("[JIT] Periodic ReadyNow! save (interval: {}s)", 
-                           self.config.readynow_save_interval_secs);
+                log::info!("[JIT] Periodic NReady! save (interval: {}s)", 
+                           self.config.nready_save_interval_secs);
                 
-                if let Err(e) = self.save_readynow(PersistFormat::All) {
-                    log::warn!("[JIT] Periodic ReadyNow! save failed: {:?}", e);
+                if let Err(e) = self.save_nready(PersistFormat::All) {
+                    log::warn!("[JIT] Periodic NReady! save failed: {:?}", e);
                 } else {
-                    log::debug!("[JIT] Periodic ReadyNow! save completed");
+                    log::debug!("[JIT] Periodic NReady! save completed");
                 }
             }
         }
@@ -1268,16 +1268,16 @@ impl JitEngine {
     
     /// Shutdown the JIT engine
     /// 
-    /// This saves ReadyNow! cache if auto_save is enabled.
+    /// This saves NReady! cache if auto_save is enabled.
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::SeqCst);
         
-        if self.config.readynow_enabled && self.config.readynow_auto_save {
-            log::info!("[JIT] Saving ReadyNow! cache on shutdown...");
-            if let Err(e) = self.save_readynow(PersistFormat::All) {
-                log::warn!("[JIT] Failed to save ReadyNow! cache: {:?}", e);
+        if self.config.nready_enabled && self.config.nready_auto_save {
+            log::info!("[JIT] Saving NReady! cache on shutdown...");
+            if let Err(e) = self.save_nready(PersistFormat::All) {
+                log::warn!("[JIT] Failed to save NReady! cache: {:?}", e);
             } else {
-                log::info!("[JIT] ReadyNow! cache saved successfully");
+                log::info!("[JIT] NReady! cache saved successfully");
             }
         }
     }
@@ -1285,11 +1285,11 @@ impl JitEngine {
 
 impl Drop for JitEngine {
     fn drop(&mut self) {
-        // Auto-save ReadyNow! on drop if enabled
-        if self.config.readynow_enabled && self.config.readynow_auto_save {
-            log::info!("[JIT] Auto-saving ReadyNow! cache on drop...");
-            if let Err(e) = self.save_readynow(PersistFormat::All) {
-                log::warn!("[JIT] Failed to auto-save ReadyNow! cache: {:?}", e);
+        // Auto-save NReady! on drop if enabled
+        if self.config.nready_enabled && self.config.nready_auto_save {
+            log::info!("[JIT] Auto-saving NReady! cache on drop...");
+            if let Err(e) = self.save_nready(PersistFormat::All) {
+                log::warn!("[JIT] Failed to auto-save NReady! cache: {:?}", e);
             }
         }
     }
@@ -1378,9 +1378,9 @@ pub struct MemAccess {
     pub value: u64,
 }
 
-/// ReadyNow! load statistics
+/// NReady! load statistics
 #[derive(Debug, Clone, Default)]
-pub struct ReadyNowStats {
+pub struct NReadyStats {
     pub profiles_loaded: usize,
     pub ir_blocks_loaded: usize,
     pub native_blocks_loaded: usize,

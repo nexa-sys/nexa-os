@@ -522,7 +522,7 @@ async fn shutdown_signal() {
         },
     }
     
-    // Shutdown all running VMs to save ReadyNow! caches
+    // Shutdown all running VMs to save NReady! caches
     log::info!("Stopping all running VMs...");
     crate::executor::vm_executor().shutdown_all();
 }

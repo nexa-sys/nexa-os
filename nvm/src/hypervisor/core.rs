@@ -1828,7 +1828,7 @@ impl VmInstance {
         
         // Backend info with performance note
         let backend_info = match self.backend_type {
-            VmBackendType::Jit => "JIT (ReadyNow! enabled, no VM-exit overhead)",
+            VmBackendType::Jit => "JIT (NReady! enabled, no VM-exit overhead)",
             VmBackendType::Vmx => "Intel VT-x (VMX)",
             VmBackendType::Svm => "AMD-V (SVM)",
             VmBackendType::Auto => "Auto-detected",
@@ -1879,7 +1879,7 @@ impl VmInstance {
     /// Start with pure JIT (software) backend
     fn start_jit_backend(&self, _address_space: &Arc<AddressSpace>) -> HypervisorResult<()> {
         let jit_config = Self::default_jit_config();
-        // Pass VM ID for ReadyNow! cache isolation
+        // Pass VM ID for NReady! cache isolation
         let vm_id_str = self.id.to_string();
         let engine = crate::jit::JitEngine::with_config(jit_config, Some(&vm_id_str));
         
@@ -2000,9 +2000,9 @@ impl VmInstance {
                 }
             }
             VmBackendType::Jit => {
-                // JIT: Call shutdown() to save ReadyNow! cache before clearing
+                // JIT: Call shutdown() to save NReady! cache before clearing
                 if let Some(engine) = self.jit_engine.read().unwrap().as_ref() {
-                    log::info!("[VM] Shutting down JIT engine (saving ReadyNow! cache)...");
+                    log::info!("[VM] Shutting down JIT engine (saving NReady! cache)...");
                     engine.shutdown();
                 }
             }

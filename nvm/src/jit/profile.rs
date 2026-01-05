@@ -502,7 +502,7 @@ impl ProfileDb {
     }
     
     // ========================================================================
-    // Serialization for ReadyNow!
+    // Serialization for NReady!
     // ========================================================================
     
     /// Serialize profile data for persistence
@@ -602,7 +602,7 @@ impl ProfileDb {
     
     /// Merge another profile database into this one
     /// 
-    /// This is used by ReadyNow! to combine persisted profile data
+    /// This is used by NReady! to combine persisted profile data
     /// with runtime data. Values are added together for counters.
     pub fn merge(&self, other: &ProfileDb) {
         // Merge block counts

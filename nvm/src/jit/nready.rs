@@ -1,4 +1,4 @@
-//! ReadyNow! Persistence
+//! NReady! Persistence
 //!
 //! Pre-warm JIT cache from persisted data for instant startup.
 //! Three persistence formats with different compatibility guarantees:
@@ -29,8 +29,8 @@ use super::profile::ProfileDb;
 use super::cache::{CompiledBlock, CompileTier, compute_checksum};
 use std::sync::atomic::AtomicU64;
 
-/// ReadyNow! cache version
-pub const READYNOW_VERSION: u32 = 1;
+/// NReady! cache version
+pub const NREADY_VERSION: u32 = 1;
 
 /// Profile format magic
 pub const PROFILE_MAGIC: &[u8; 4] = b"NVMP";
@@ -41,8 +41,8 @@ pub const RI_MAGIC: &[u8; 4] = b"NVRI";
 /// Native code format magic
 pub const NATIVE_MAGIC: &[u8; 4] = b"NVNC";
 
-/// ReadyNow! cache manager
-pub struct ReadyNowCache {
+/// NReady! cache manager
+pub struct NReadyCache {
     /// Base directory for cache files
     cache_dir: String,
     /// VM instance ID (for isolation)
@@ -77,22 +77,22 @@ impl Architecture {
     }
 }
 
-impl ReadyNowCache {
-    /// Create a new ReadyNow! cache
+impl NReadyCache {
+    /// Create a new NReady! cache
     /// 
     /// Creates the cache directory if it doesn't exist.
     pub fn new(cache_dir: &str, instance_id: &str) -> Self {
         // Ensure cache directory exists
         if let Err(e) = std::fs::create_dir_all(cache_dir) {
-            log::warn!("[ReadyNow!] Failed to create cache directory '{}': {}", cache_dir, e);
+            log::warn!("[NReady!] Failed to create cache directory '{}': {}", cache_dir, e);
         } else {
-            log::info!("[ReadyNow!] Cache directory: {}", cache_dir);
+            log::info!("[NReady!] Cache directory: {}", cache_dir);
         }
         
         Self {
             cache_dir: cache_dir.to_string(),
             instance_id: instance_id.to_string(),
-            jit_version: READYNOW_VERSION,
+            jit_version: NREADY_VERSION,
             arch: Architecture::X86_64,
         }
     }
@@ -178,7 +178,7 @@ impl ReadyNowCache {
         
         // Header
         data.extend_from_slice(RI_MAGIC);
-        data.extend_from_slice(&READYNOW_VERSION.to_le_bytes());
+        data.extend_from_slice(&NREADY_VERSION.to_le_bytes());
         
         // Block count
         data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
@@ -594,7 +594,7 @@ impl ReadyNowCache {
         let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
         
         // RI format is backward compatible only
-        if version > READYNOW_VERSION {
+        if version > NREADY_VERSION {
             return Err(JitError::IncompatibleVersion);
         }
         
@@ -1050,7 +1050,7 @@ impl ReadyNowCache {
         // Block count
         data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
         
-        log::debug!("[ReadyNow!] Saving {} native code blocks", blocks.len());
+        log::debug!("[NReady!] Saving {} native code blocks", blocks.len());
         
         // Each block header is 40 bytes:
         // - guest_rip: 8 bytes
@@ -1093,7 +1093,7 @@ impl ReadyNowCache {
         file.write_all(&data)
             .map_err(|_| JitError::IoError)?;
         
-        log::info!("[ReadyNow!] Saved {} bytes to {}", data.len(), path);
+        log::info!("[NReady!] Saved {} bytes to {}", data.len(), path);
         
         Ok(())
     }
@@ -1302,7 +1302,7 @@ mod tests {
     
     #[test]
     fn test_profile_roundtrip() {
-        let cache = ReadyNowCache::new("/tmp", "test");
+        let cache = NReadyCache::new("/tmp", "test");
         let profile = ProfileDb::new(1000);
         
         profile.record_block(0x1000);

@@ -346,7 +346,7 @@ impl VmExecutor {
     
     /// Gracefully shutdown all running VMs
     /// 
-    /// Called during server shutdown to ensure ReadyNow! caches are saved.
+    /// Called during server shutdown to ensure NReady! caches are saved.
     pub fn shutdown_all(&mut self) {
         let vm_ids: Vec<String> = self.running_vms.keys().cloned().collect();
         
