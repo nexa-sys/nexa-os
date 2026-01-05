@@ -180,6 +180,12 @@ impl Interpreter {
             Mnemonic::Pop => self.exec_pop(cpu, memory, instr),
             Mnemonic::Xchg => self.exec_xchg(cpu, memory, instr),
             
+            // Real mode specific: PUSHA/POPA/PUSHF/POPF
+            Mnemonic::Pusha => self.exec_pusha(cpu, memory, instr),
+            Mnemonic::Popa => self.exec_popa(cpu, memory, instr),
+            Mnemonic::Pushf => self.exec_pushf(cpu, memory, instr),
+            Mnemonic::Popf => self.exec_popf(cpu, memory, instr),
+            
             // Arithmetic
             Mnemonic::Add => self.exec_alu(cpu, memory, instr, AluOp::Add),
             Mnemonic::Adc => self.exec_alu(cpu, memory, instr, AluOp::Adc),
@@ -208,6 +214,7 @@ impl Interpreter {
             Mnemonic::Jcc => self.exec_jcc(cpu, instr),
             Mnemonic::Call => self.exec_call(cpu, memory, instr),
             Mnemonic::Ret => self.exec_ret(cpu, memory, instr),
+            Mnemonic::Retf => self.exec_retf(cpu, memory, instr),  // FAR RET for real mode
             Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne => {
                 self.exec_loop(cpu, instr)
             }
@@ -386,16 +393,56 @@ impl Interpreter {
     
     fn exec_push(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let value = self.read_operand(cpu, memory, &instr.operands[0], instr)?;
-        let rsp = cpu.read_gpr(4) - 8;
-        cpu.write_gpr(4, rsp);
-        memory.write_u64(rsp, value);
+        let mode = Self::get_cpu_mode(cpu);
+        
+        match mode {
+            CpuMode::Real => {
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = (cpu.read_gpr(4) as u16).wrapping_sub(2);
+                memory.write_u16(ss_base + sp as u64, value as u16);
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = (cpu.read_gpr(4) as u32).wrapping_sub(4);
+                memory.write_u32(ss_base + sp as u64, value as u32);
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Long => {
+                let rsp = cpu.read_gpr(4) - 8;
+                cpu.write_gpr(4, rsp);
+                memory.write_u64(rsp, value);
+            }
+        }
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
     fn exec_pop(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
-        let rsp = cpu.read_gpr(4);
-        let value = memory.read_u64(rsp);
-        cpu.write_gpr(4, rsp + 8);
+        let mode = Self::get_cpu_mode(cpu);
+        
+        let value = match mode {
+            CpuMode::Real => {
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u16;
+                let val = memory.read_u16(ss_base + sp as u64) as u64;
+                cpu.write_gpr(4, sp.wrapping_add(2) as u64);
+                val
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u32;
+                let val = memory.read_u32(ss_base + sp as u64) as u64;
+                cpu.write_gpr(4, sp.wrapping_add(4) as u64);
+                val
+            }
+            CpuMode::Long => {
+                let rsp = cpu.read_gpr(4);
+                let val = memory.read_u64(rsp);
+                cpu.write_gpr(4, rsp + 8);
+                val
+            }
+        };
+        
         self.write_operand(cpu, memory, &instr.operands[0], value, instr)?;
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
@@ -645,16 +692,57 @@ impl Interpreter {
     
     fn exec_call(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         let ret_addr = instr.rip + instr.len as u64;
+        let mode = Self::get_cpu_mode(cpu);
         
-        // Push return address
-        let rsp = cpu.read_gpr(4) - 8;
-        cpu.write_gpr(4, rsp);
-        memory.write_u64(rsp, ret_addr);
+        // Push return address based on CPU mode
+        match mode {
+            CpuMode::Real => {
+                // 16-bit: push 16-bit return address
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = (cpu.read_gpr(4) as u16).wrapping_sub(2);
+                memory.write_u16(ss_base + sp as u64, ret_addr as u16);
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                // 32-bit: push 32-bit return address
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = (cpu.read_gpr(4) as u32).wrapping_sub(4);
+                memory.write_u32(ss_base + sp as u64, ret_addr as u32);
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Long => {
+                // 64-bit: push 64-bit return address
+                let rsp = cpu.read_gpr(4) - 8;
+                cpu.write_gpr(4, rsp);
+                memory.write_u64(rsp, ret_addr);
+            }
+        }
         
         // Get target
         let target = match &instr.operands[0] {
             Operand::Rel(offset) => {
                 (instr.rip as i64 + instr.len as i64 + offset) as u64
+            }
+            Operand::Far { seg, off } => {
+                // FAR CALL: push CS first, then IP
+                match mode {
+                    CpuMode::Real => {
+                        // Push current CS
+                        let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                        let sp = cpu.read_gpr(4) as u16;
+                        let cs = (cpu.read_segment_base(crate::cpu::SegmentRegister::Cs) / 16) as u16;
+                        let sp = sp.wrapping_sub(2);
+                        memory.write_u16(ss_base + sp as u64, cs);
+                        cpu.write_gpr(4, sp as u64);
+                        
+                        // Update CS to new segment
+                        cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, (*seg as u64) * 16);
+                        
+                        // Return linear address
+                        (*seg as u64) * 16 + *off
+                    }
+                    _ => *off,  // Protected/Long mode would need GDT lookup
+                }
             }
             _ => self.read_operand(cpu, memory, &instr.operands[0], instr)?,
         };
@@ -662,10 +750,61 @@ impl Interpreter {
         Ok(InstrResult::Continue(target))
     }
     
-    fn exec_ret(&self, cpu: &VirtualCpu, memory: &AddressSpace, _instr: &DecodedInstr) -> JitResult<InstrResult> {
-        let rsp = cpu.read_gpr(4);
-        let ret_addr = memory.read_u64(rsp);
-        cpu.write_gpr(4, rsp + 8);
+    fn exec_ret(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let mode = Self::get_cpu_mode(cpu);
+        
+        // Pop return address based on CPU mode
+        let ret_addr = match mode {
+            CpuMode::Real => {
+                // 16-bit: pop 16-bit return address
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u16;
+                let ret = memory.read_u16(ss_base + sp as u64) as u64;
+                
+                // Handle RET imm16 - pop extra bytes
+                let pop_bytes = if let Some(Operand::Imm(imm)) = instr.operands.get(0) {
+                    *imm as u16
+                } else {
+                    0
+                };
+                
+                cpu.write_gpr(4, sp.wrapping_add(2).wrapping_add(pop_bytes) as u64);
+                
+                // In real mode, return address is relative to CS base
+                let cs_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Cs);
+                cs_base + ret
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                // 32-bit: pop 32-bit return address
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u32;
+                let ret = memory.read_u32(ss_base + sp as u64) as u64;
+                
+                let pop_bytes = if let Some(Operand::Imm(imm)) = instr.operands.get(0) {
+                    *imm as u32
+                } else {
+                    0
+                };
+                
+                cpu.write_gpr(4, sp.wrapping_add(4).wrapping_add(pop_bytes) as u64);
+                ret
+            }
+            CpuMode::Long => {
+                // 64-bit: pop 64-bit return address
+                let rsp = cpu.read_gpr(4);
+                let ret = memory.read_u64(rsp);
+                
+                let pop_bytes = if let Some(Operand::Imm(imm)) = instr.operands.get(0) {
+                    *imm as u64
+                } else {
+                    0
+                };
+                
+                cpu.write_gpr(4, rsp + 8 + pop_bytes);
+                ret
+            }
+        };
+        
         Ok(InstrResult::Continue(ret_addr))
     }
     
@@ -784,14 +923,64 @@ impl Interpreter {
     }
     
     fn exec_iret(&self, cpu: &VirtualCpu, memory: &AddressSpace, _instr: &DecodedInstr) -> JitResult<InstrResult> {
-        // Pop RIP, CS, RFLAGS
-        let rsp = cpu.read_gpr(4);
-        let rip = memory.read_u64(rsp);
-        let _cs = memory.read_u64(rsp + 8) as u16;
-        let rflags = memory.read_u64(rsp + 16);
-        cpu.write_gpr(4, rsp + 24);
-        cpu.write_rflags(rflags);
-        Ok(InstrResult::Continue(rip))
+        let mode = Self::get_cpu_mode(cpu);
+        
+        match mode {
+            CpuMode::Real => {
+                // 16-bit IRET: pop IP, CS, FLAGS (2+2+2 = 6 bytes)
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u16;
+                
+                let ip = memory.read_u16(ss_base + sp as u64);
+                let cs = memory.read_u16(ss_base + (sp.wrapping_add(2)) as u64);
+                let flags = memory.read_u16(ss_base + (sp.wrapping_add(4)) as u64);
+                
+                cpu.write_gpr(4, sp.wrapping_add(6) as u64);
+                
+                // Update FLAGS (preserve reserved bits)
+                let old_flags = cpu.read_rflags();
+                cpu.write_rflags((old_flags & !0xFFFF) | flags as u64);
+                
+                // Update CS segment base
+                cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, (cs as u64) * 16);
+                
+                // Return to CS:IP (linear address)
+                let rip = (cs as u64) * 16 + ip as u64;
+                Ok(InstrResult::Continue(rip))
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                // 32-bit IRET: pop EIP, CS, EFLAGS (4+4+4 = 12 bytes)
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u32;
+                
+                let eip = memory.read_u32(ss_base + sp as u64);
+                let _cs = memory.read_u32(ss_base + (sp.wrapping_add(4)) as u64) as u16;
+                let eflags = memory.read_u32(ss_base + (sp.wrapping_add(8)) as u64);
+                
+                cpu.write_gpr(4, sp.wrapping_add(12) as u64);
+                
+                // Update EFLAGS (preserve some protected bits)
+                let mask = 0x00257FD5u32;
+                let old_flags = cpu.read_rflags() as u32;
+                cpu.write_rflags(((old_flags & !mask) | (eflags & mask)) as u64);
+                
+                Ok(InstrResult::Continue(eip as u64))
+            }
+            CpuMode::Long => {
+                // 64-bit IRET: pop RIP, CS, RFLAGS, RSP, SS (8+8+8+8+8 = 40 bytes)
+                let rsp = cpu.read_gpr(4);
+                let rip = memory.read_u64(rsp);
+                let _cs = memory.read_u64(rsp + 8) as u16;
+                let rflags = memory.read_u64(rsp + 16);
+                let new_rsp = memory.read_u64(rsp + 24);
+                let _ss = memory.read_u64(rsp + 32) as u16;
+                
+                cpu.write_gpr(4, new_rsp);
+                cpu.write_rflags(rflags);
+                
+                Ok(InstrResult::Continue(rip))
+            }
+        }
     }
     
     /// Execute LGDT or LIDT instruction
@@ -1078,6 +1267,236 @@ impl Interpreter {
         cpu.set_flag_zf(result == 0);
         cpu.set_flag_sf((result & sign_bit) != 0);
         cpu.set_flag_pf(result.count_ones() % 2 == 0);
+    }
+    
+    // ========================================================================
+    // Real Mode Instructions (16-bit)
+    // ========================================================================
+    
+    /// PUSHA - Push All General Registers (16-bit mode: AX, CX, DX, BX, SP, BP, SI, DI)
+    fn exec_pusha(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let mode = Self::get_cpu_mode(cpu);
+        let next_rip = instr.rip + instr.len as u64;
+        
+        match mode {
+            CpuMode::Real | CpuMode::Protected | CpuMode::Compat => {
+                let temp_sp = cpu.read_gpr(4) as u16;  // Original SP
+                
+                // Push order: AX, CX, DX, BX, SP (original), BP, SI, DI
+                let regs_to_push = [
+                    cpu.read_gpr(0) as u16,  // AX
+                    cpu.read_gpr(1) as u16,  // CX
+                    cpu.read_gpr(2) as u16,  // DX
+                    cpu.read_gpr(3) as u16,  // BX
+                    temp_sp,                  // Original SP
+                    cpu.read_gpr(5) as u16,  // BP
+                    cpu.read_gpr(6) as u16,  // SI
+                    cpu.read_gpr(7) as u16,  // DI
+                ];
+                
+                let mut sp = temp_sp;
+                for &val in &regs_to_push {
+                    sp = sp.wrapping_sub(2);
+                    // In real mode, address is SS:SP
+                    let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                    let addr = ss_base + sp as u64;
+                    memory.write_u16(addr, val);
+                }
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Long => {
+                // PUSHA is invalid in 64-bit mode
+                return Err(JitError::DecodeError {
+                    rip: instr.rip,
+                    bytes: vec![],
+                    reason: "PUSHA invalid in 64-bit mode".to_string(),
+                });
+            }
+        }
+        
+        Ok(InstrResult::Continue(next_rip))
+    }
+    
+    /// POPA - Pop All General Registers (16-bit mode)
+    fn exec_popa(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let mode = Self::get_cpu_mode(cpu);
+        let next_rip = instr.rip + instr.len as u64;
+        
+        match mode {
+            CpuMode::Real | CpuMode::Protected | CpuMode::Compat => {
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let mut sp = cpu.read_gpr(4) as u16;
+                
+                // Pop order: DI, SI, BP, (skip SP), BX, DX, CX, AX
+                let di = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                let si = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                let bp = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                let _skip_sp = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);  // SP is discarded
+                let bx = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                let dx = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                let cx = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                let ax = memory.read_u16(ss_base + sp as u64); sp = sp.wrapping_add(2);
+                
+                // Write to low 16 bits of registers
+                cpu.write_gpr(0, (cpu.read_gpr(0) & !0xFFFF) | ax as u64);  // AX
+                cpu.write_gpr(1, (cpu.read_gpr(1) & !0xFFFF) | cx as u64);  // CX
+                cpu.write_gpr(2, (cpu.read_gpr(2) & !0xFFFF) | dx as u64);  // DX
+                cpu.write_gpr(3, (cpu.read_gpr(3) & !0xFFFF) | bx as u64);  // BX
+                cpu.write_gpr(4, sp as u64);  // SP updated
+                cpu.write_gpr(5, (cpu.read_gpr(5) & !0xFFFF) | bp as u64);  // BP
+                cpu.write_gpr(6, (cpu.read_gpr(6) & !0xFFFF) | si as u64);  // SI
+                cpu.write_gpr(7, (cpu.read_gpr(7) & !0xFFFF) | di as u64);  // DI
+            }
+            CpuMode::Long => {
+                return Err(JitError::DecodeError {
+                    rip: instr.rip,
+                    bytes: vec![],
+                    reason: "POPA invalid in 64-bit mode".to_string(),
+                });
+            }
+        }
+        
+        Ok(InstrResult::Continue(next_rip))
+    }
+    
+    /// PUSHF - Push FLAGS register
+    fn exec_pushf(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let mode = Self::get_cpu_mode(cpu);
+        let next_rip = instr.rip + instr.len as u64;
+        let flags = cpu.read_rflags();
+        
+        match mode {
+            CpuMode::Real => {
+                // Push 16-bit FLAGS
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = (cpu.read_gpr(4) as u16).wrapping_sub(2);
+                memory.write_u16(ss_base + sp as u64, flags as u16);
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                // Push 32-bit EFLAGS
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = (cpu.read_gpr(4) as u32).wrapping_sub(4);
+                memory.write_u32(ss_base + sp as u64, flags as u32);
+                cpu.write_gpr(4, sp as u64);
+            }
+            CpuMode::Long => {
+                // Push 64-bit RFLAGS
+                let sp = cpu.read_gpr(4).wrapping_sub(8);
+                memory.write_u64(sp, flags);
+                cpu.write_gpr(4, sp);
+            }
+        }
+        
+        Ok(InstrResult::Continue(next_rip))
+    }
+    
+    /// POPF - Pop FLAGS register  
+    fn exec_popf(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let mode = Self::get_cpu_mode(cpu);
+        let next_rip = instr.rip + instr.len as u64;
+        
+        match mode {
+            CpuMode::Real => {
+                // Pop 16-bit FLAGS
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u16;
+                let flags = memory.read_u16(ss_base + sp as u64);
+                cpu.write_rflags((cpu.read_rflags() & !0xFFFF) | flags as u64);
+                cpu.write_gpr(4, sp.wrapping_add(2) as u64);
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                // Pop 32-bit EFLAGS (some bits are protected)
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u32;
+                let flags = memory.read_u32(ss_base + sp as u64);
+                // Preserve some protected flags
+                let mask = 0x00257FD5u32;  // Modifiable flags
+                let new_flags = (cpu.read_rflags() as u32 & !mask) | (flags & mask);
+                cpu.write_rflags(new_flags as u64);
+                cpu.write_gpr(4, sp.wrapping_add(4) as u64);
+            }
+            CpuMode::Long => {
+                // Pop 64-bit RFLAGS
+                let sp = cpu.read_gpr(4);
+                let flags = memory.read_u64(sp);
+                let mask = 0x0000000000257FD5u64;
+                let new_flags = (cpu.read_rflags() & !mask) | (flags & mask);
+                cpu.write_rflags(new_flags);
+                cpu.write_gpr(4, sp.wrapping_add(8));
+            }
+        }
+        
+        Ok(InstrResult::Continue(next_rip))
+    }
+    
+    /// RETF - Far Return (pop IP and CS from stack)
+    fn exec_retf(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let mode = Self::get_cpu_mode(cpu);
+        
+        match mode {
+            CpuMode::Real => {
+                // Pop 16-bit IP and CS
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u16;
+                let ip = memory.read_u16(ss_base + sp as u64);
+                let cs = memory.read_u16(ss_base + (sp.wrapping_add(2)) as u64);
+                cpu.write_gpr(4, sp.wrapping_add(4) as u64);
+                
+                // Update CS segment base for real mode
+                cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, (cs as u64) * 16);
+                
+                // Return address is CS:IP (linear = CS*16 + IP)
+                let linear = (cs as u64) * 16 + ip as u64;
+                Ok(InstrResult::Continue(linear))
+            }
+            CpuMode::Protected | CpuMode::Compat => {
+                // Pop 32-bit EIP and CS (selector)
+                let ss_base = cpu.read_segment_base(crate::cpu::SegmentRegister::Ss);
+                let sp = cpu.read_gpr(4) as u32;
+                let eip = memory.read_u32(ss_base + sp as u64);
+                let cs_selector = memory.read_u16(ss_base + (sp.wrapping_add(4)) as u64);
+                cpu.write_gpr(4, sp.wrapping_add(8) as u64);
+                
+                // Load CS from selector (simplified - just update segment base from GDT)
+                let (gdt_limit, gdt_base) = cpu.get_gdtr();
+                let index = (cs_selector >> 3) as u64;
+                let desc_addr = gdt_base + index * 8;
+                
+                if desc_addr + 8 <= gdt_base + gdt_limit as u64 + 1 {
+                    let desc_lo = memory.read_u32(desc_addr) as u64;
+                    let desc_hi = memory.read_u32(desc_addr + 4) as u64;
+                    let base = ((desc_lo >> 16) & 0xFFFF) | 
+                               ((desc_hi & 0xFF) << 16) |
+                               ((desc_hi >> 24) << 24);
+                    cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, base);
+                }
+                
+                Ok(InstrResult::Continue(eip as u64))
+            }
+            CpuMode::Long => {
+                // Pop 64-bit RIP and CS
+                let sp = cpu.read_gpr(4);
+                let rip = memory.read_u64(sp);
+                let cs_selector = memory.read_u16(sp + 8);
+                cpu.write_gpr(4, sp.wrapping_add(16));
+                
+                // CS selector in long mode
+                let (gdt_limit, gdt_base) = cpu.get_gdtr();
+                let index = (cs_selector >> 3) as u64;
+                let desc_addr = gdt_base + index * 8;
+                
+                if desc_addr + 8 <= gdt_base + gdt_limit as u64 + 1 {
+                    let desc_lo = memory.read_u32(desc_addr) as u64;
+                    let desc_hi = memory.read_u32(desc_addr + 4) as u64;
+                    // In 64-bit mode, base is mostly ignored for code segments
+                    let attrib = ((desc_hi >> 8) & 0xFF) | ((desc_hi >> 12) & 0xF00);
+                    cpu.write_segment_attrib(crate::cpu::SegmentRegister::Cs, attrib as u16);
+                }
+                
+                Ok(InstrResult::Continue(rip))
+            }
+        }
     }
 }
 

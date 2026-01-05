@@ -457,13 +457,142 @@ impl BiosServices {
                 }
             }
             0x41 => {
-                // Check extensions present
+                // Check extensions present (INT 13h Extensions)
+                // Input: DL = drive, BX = 0x55AA
+                // Output: AH = version, BX = 0xAA55, CX = support bitmap
                 if (regs.rbx & 0xFFFF) == 0x55AA {
-                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;  // Version 1.0
-                    regs.rbx = (regs.rbx & 0xFFFF0000) | 0xAA55;
-                    regs.rcx = 0x0001;  // Extended disk access supported
+                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x2100;  // Version 2.1
+                    regs.rbx = (regs.rbx & 0xFFFF0000) | 0xAA55;  // Signature
+                    regs.rcx = 0x0007;  // Support: extended r/w (1), removable (2), EDD (4)
                     regs.rflags &= !1;
                 } else {
+                    regs.rflags |= 1;
+                }
+            }
+            0x42 => {
+                // Extended read sectors (LBA mode)
+                // Input: DS:SI = Disk Address Packet (DAP)
+                // DAP format:
+                //   Offset 0 (1 byte): Size of packet (16 or 24)
+                //   Offset 1 (1 byte): Reserved (0)
+                //   Offset 2 (2 bytes): Number of sectors
+                //   Offset 4 (4 bytes): Transfer buffer (segment:offset)
+                //   Offset 8 (8 bytes): Starting LBA
+                let ds = ((regs.rsi >> 16) & 0xFFFF) as u64;
+                let si = (regs.rsi & 0xFFFF) as u64;
+                let dap_addr = (ds * 16 + si) as usize;
+                
+                if dap_addr + 16 > memory.len() {
+                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;  // AH = 01
+                    regs.rflags |= 1;
+                    return;
+                }
+                
+                // Read DAP
+                let packet_size = memory[dap_addr];
+                let num_sectors = u16::from_le_bytes([memory[dap_addr + 2], memory[dap_addr + 3]]);
+                let buf_offset = u16::from_le_bytes([memory[dap_addr + 4], memory[dap_addr + 5]]);
+                let buf_segment = u16::from_le_bytes([memory[dap_addr + 6], memory[dap_addr + 7]]);
+                let start_lba = u64::from_le_bytes([
+                    memory[dap_addr + 8], memory[dap_addr + 9],
+                    memory[dap_addr + 10], memory[dap_addr + 11],
+                    memory[dap_addr + 12], memory[dap_addr + 13],
+                    memory[dap_addr + 14], memory[dap_addr + 15],
+                ]);
+                
+                let buffer = (buf_segment as usize * 16 + buf_offset as usize) as usize;
+                
+                log::debug!("INT 13h/42h: drive={:#x}, LBA={}, sectors={}, buffer={:#x}",
+                           dl, start_lba, num_sectors, buffer);
+                
+                if let Some(params) = self.disk_params.get(&dl) {
+                    // For LBA 0, use stored boot sector
+                    if start_lba == 0 && num_sectors >= 1 {
+                        if let Some(ref boot) = self.boot_sector {
+                            let dest_end = buffer + 512;
+                            if dest_end <= memory.len() {
+                                memory[buffer..dest_end].copy_from_slice(boot);
+                                regs.rax &= 0xFFFF00FF;  // AH = 0 (success)
+                                regs.rflags &= !1;  // Clear CF
+                                return;
+                            }
+                        }
+                    }
+                    
+                    // Success (data would come from disk image)
+                    regs.rax &= 0xFFFF00FF;  // AH = 0 (success)
+                    regs.rflags &= !1;
+                } else {
+                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;  // AH = 01 (bad command)
+                    regs.rflags |= 1;
+                }
+            }
+            0x43 => {
+                // Extended write sectors (LBA mode)
+                // Same DAP format as 42h
+                let ds = ((regs.rsi >> 16) & 0xFFFF) as u64;
+                let si = (regs.rsi & 0xFFFF) as u64;
+                let dap_addr = (ds * 16 + si) as usize;
+                
+                if dap_addr + 16 > memory.len() {
+                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;
+                    regs.rflags |= 1;
+                    return;
+                }
+                
+                // Read DAP
+                let num_sectors = u16::from_le_bytes([memory[dap_addr + 2], memory[dap_addr + 3]]);
+                let start_lba = u64::from_le_bytes([
+                    memory[dap_addr + 8], memory[dap_addr + 9],
+                    memory[dap_addr + 10], memory[dap_addr + 11],
+                    memory[dap_addr + 12], memory[dap_addr + 13],
+                    memory[dap_addr + 14], memory[dap_addr + 15],
+                ]);
+                
+                log::debug!("INT 13h/43h: drive={:#x}, LBA={}, sectors={}", dl, start_lba, num_sectors);
+                
+                if self.disk_params.contains_key(&dl) {
+                    // Success (would write to disk image)
+                    regs.rax &= 0xFFFF00FF;  // AH = 0 (success)
+                    regs.rflags &= !1;
+                } else {
+                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;
+                    regs.rflags |= 1;
+                }
+            }
+            0x48 => {
+                // Extended get drive parameters
+                // Input: DS:SI = result buffer, DL = drive
+                // Output: buffer filled with drive info
+                let ds = ((regs.rsi >> 16) & 0xFFFF) as u64;
+                let si = (regs.rsi & 0xFFFF) as u64;
+                let buf_addr = (ds * 16 + si) as usize;
+                
+                if let Some(params) = self.disk_params.get(&dl) {
+                    if buf_addr + 26 <= memory.len() {
+                        // Size of buffer (2 bytes)
+                        memory[buf_addr..buf_addr+2].copy_from_slice(&26u16.to_le_bytes());
+                        // Information flags (2 bytes)
+                        memory[buf_addr+2..buf_addr+4].copy_from_slice(&0x0002u16.to_le_bytes()); // LBA supported
+                        // Physical cylinders (4 bytes)
+                        memory[buf_addr+4..buf_addr+8].copy_from_slice(&(params.cylinders as u32).to_le_bytes());
+                        // Physical heads (4 bytes)
+                        memory[buf_addr+8..buf_addr+12].copy_from_slice(&(params.heads as u32).to_le_bytes());
+                        // Physical sectors per track (4 bytes)
+                        memory[buf_addr+12..buf_addr+16].copy_from_slice(&(params.sectors_per_track as u32).to_le_bytes());
+                        // Total sectors (8 bytes)
+                        memory[buf_addr+16..buf_addr+24].copy_from_slice(&(params.total_sectors as u64).to_le_bytes());
+                        // Bytes per sector (2 bytes)
+                        memory[buf_addr+24..buf_addr+26].copy_from_slice(&params.bytes_per_sector.to_le_bytes());
+                        
+                        regs.rax &= 0xFFFF00FF;  // AH = 0 (success)
+                        regs.rflags &= !1;
+                    } else {
+                        regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;
+                        regs.rflags |= 1;
+                    }
+                } else {
+                    regs.rax = (regs.rax & 0xFFFF00FF) | 0x0100;
                     regs.rflags |= 1;
                 }
             }
@@ -476,44 +605,74 @@ impl BiosServices {
     }
     
     /// Handle INT 15h - System services
-    pub fn handle_int15(&self, regs: &mut ServiceRegisters, config: &BiosConfig) {
+    pub fn handle_int15(&self, regs: &mut ServiceRegisters, config: &BiosConfig, memory: &mut [u8]) {
         let ah = ((regs.rax >> 8) & 0xFF) as u8;
         let ax = (regs.rax & 0xFFFF) as u16;
         
         match ax {
             0xE820 => {
-                // Get memory map
+                // Get memory map - INT 15h, AX=E820h
+                // Input: EBX = continuation value (0 for first call)
+                //        ES:DI = buffer address
+                //        ECX = buffer size (should be >= 20)
+                //        EDX = signature ('SMAP' = 0x534D4150)
+                // Output: EAX = 'SMAP' signature
+                //         EBX = continuation (0 = last entry)
+                //         ECX = bytes written (20 or 24)
+                //         ES:DI buffer filled with entry
+                //         CF clear on success
                 let continuation = regs.rbx as u32;
-                let buffer = regs.rdi as usize;
+                let es = ((regs.rdi >> 16) & 0xFFFF) as u64;  // ES from high word
+                let di = (regs.rdi & 0xFFFF) as u64;
+                let buffer = (es * 16 + di) as usize;  // Linear address in real mode
                 
-                // Simplified memory map entries
-                let entries = [
-                    // Base, Length, Type (1=usable, 2=reserved, 3=ACPI reclaim)
-                    (0x0000_0000u64, 0x0009_FC00u64, 1u32),  // Conventional memory
-                    (0x0009_FC00u64, 0x0000_0400u64, 2u32),  // Extended BIOS data
-                    (0x000F_0000u64, 0x0001_0000u64, 2u32),  // BIOS ROM
-                    (0x0010_0000u64, (config.extended_memory_kb as u64) * 1024, 1u32),  // Extended memory
-                    (0xFEC0_0000u64, 0x0001_0000u64, 2u32),  // I/O APIC
-                    (0xFEE0_0000u64, 0x0001_0000u64, 2u32),  // Local APIC
-                    (0xFFFC_0000u64, 0x0004_0000u64, 2u32),  // High BIOS
+                // Comprehensive memory map entries for real OS boot
+                let entries: [(u64, u64, u32); 9] = [
+                    // Base, Length, Type (1=usable, 2=reserved, 3=ACPI reclaim, 4=ACPI NVS)
+                    (0x0000_0000, 0x0009_FC00, 1),           // 0-640KB: Conventional memory
+                    (0x0009_FC00, 0x0000_0400, 2),           // 640KB: Extended BIOS Data Area
+                    (0x000E_0000, 0x0002_0000, 2),           // E0000-FFFFF: BIOS ROM/Video
+                    (0x0010_0000, (config.extended_memory_kb as u64) * 1024, 1), // 1MB+: Extended memory
+                    (0x00F0_0000, 0x0010_0000, 2),           // 15-16MB: ISA memory hole (if present)
+                    (0xFEC0_0000, 0x0000_1000, 2),           // I/O APIC
+                    (0xFED0_0000, 0x0000_1000, 2),           // HPET
+                    (0xFEE0_0000, 0x0000_1000, 2),           // Local APIC
+                    (0xFFFC_0000, 0x0004_0000, 2),           // High BIOS
                 ];
                 
                 if (continuation as usize) < entries.len() {
                     let (base, length, mem_type) = entries[continuation as usize];
-                    // Write E820 entry (20 bytes)
-                    // This would write to guest memory at 'buffer' offset
-                    let _ = (buffer, base, length, mem_type);
                     
-                    regs.rax = (regs.rax & 0xFFFF0000) | 0x534D4150;  // "SMAP"
-                    regs.rcx = 20;
+                    // Skip zero-length entries
+                    if length == 0 {
+                        regs.rbx = (continuation as u64) + 1;
+                        regs.rax = 0x534D_4150;  // "SMAP"
+                        regs.rcx = 0;
+                        regs.rflags &= !1;
+                        return;
+                    }
+                    
+                    // Write E820 entry (20 bytes minimum) to guest memory
+                    // Format: base (8) + length (8) + type (4) = 20 bytes
+                    if buffer + 20 <= memory.len() {
+                        // Base address (8 bytes, little-endian)
+                        memory[buffer..buffer+8].copy_from_slice(&base.to_le_bytes());
+                        // Length (8 bytes, little-endian)
+                        memory[buffer+8..buffer+16].copy_from_slice(&length.to_le_bytes());
+                        // Type (4 bytes, little-endian)
+                        memory[buffer+16..buffer+20].copy_from_slice(&mem_type.to_le_bytes());
+                    }
+                    
+                    regs.rax = 0x534D_4150;  // "SMAP" signature
+                    regs.rcx = 20;           // Bytes written
                     regs.rbx = if continuation as usize + 1 < entries.len() {
-                        continuation as u64 + 1
+                        (continuation + 1) as u64
                     } else {
                         0  // End of list
                     };
-                    regs.rflags &= !1;  // Clear CF
+                    regs.rflags &= !1;  // Clear CF (success)
                 } else {
-                    regs.rflags |= 1;  // Set CF (end of list)
+                    regs.rflags |= 1;  // Set CF (end of list/error)
                 }
             }
             0xE801 => {
@@ -585,6 +744,106 @@ impl BiosServices {
     /// Handle INT 12h - Get conventional memory size
     pub fn handle_int12(&self, regs: &mut ServiceRegisters, config: &BiosConfig) {
         regs.rax = config.memory_kb as u64;
+    }
+    
+    /// Handle INT 1Ah - Time services (RTC and PCI BIOS)
+    pub fn handle_int1a(&self, regs: &mut ServiceRegisters, bda: &BiosDataArea) {
+        let ah = ((regs.rax >> 8) & 0xFF) as u8;
+        
+        match ah {
+            0x00 => {
+                // Get system time (tick count since midnight)
+                // CX:DX = tick count, AL = midnight flag
+                let ticks = bda.timer_ticks;
+                regs.rcx = ((ticks >> 16) & 0xFFFF) as u64;  // High word
+                regs.rdx = (ticks & 0xFFFF) as u64;          // Low word
+                regs.rax = regs.rax & 0xFFFFFF00;             // AL = 0 (no midnight rollover)
+                regs.rflags &= !1;
+            }
+            0x01 => {
+                // Set system time
+                // CX:DX = new tick count
+                // We don't actually modify BDA here (read-only borrow)
+                regs.rflags &= !1;
+            }
+            0x02 => {
+                // Get RTC time
+                // Returns CH=hours, CL=minutes, DH=seconds (BCD)
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let secs = (now % 60) as u8;
+                let mins = ((now / 60) % 60) as u8;
+                let hours = ((now / 3600) % 24) as u8;
+                
+                // Convert to BCD
+                let secs_bcd = ((secs / 10) << 4) | (secs % 10);
+                let mins_bcd = ((mins / 10) << 4) | (mins % 10);
+                let hours_bcd = ((hours / 10) << 4) | (hours % 10);
+                
+                regs.rcx = ((hours_bcd as u64) << 8) | mins_bcd as u64;
+                regs.rdx = (secs_bcd as u64) << 8;
+                regs.rax = regs.rax & 0xFFFF00FF;  // AH = 0 (success)
+                regs.rflags &= !1;
+            }
+            0x03 => {
+                // Set RTC time - just acknowledge
+                regs.rflags &= !1;
+            }
+            0x04 => {
+                // Get RTC date
+                // Returns CH=century, CL=year, DH=month, DL=day (BCD)
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                // Approximate date calculation (not perfect but close)
+                let days_since_epoch = now / 86400;
+                let year = 1970 + (days_since_epoch / 365);
+                let year_in_century = (year % 100) as u8;
+                let century = (year / 100) as u8;
+                
+                let century_bcd = ((century / 10) << 4) | (century % 10);
+                let year_bcd = ((year_in_century / 10) << 4) | (year_in_century % 10);
+                
+                // Simplified: assume January 1st
+                regs.rcx = ((century_bcd as u64) << 8) | year_bcd as u64;
+                regs.rdx = 0x0101;  // Month=01, Day=01
+                regs.rax = regs.rax & 0xFFFF00FF;
+                regs.rflags &= !1;
+            }
+            0x05 => {
+                // Set RTC date - just acknowledge
+                regs.rflags &= !1;
+            }
+            0xB1 => {
+                // PCI BIOS services
+                let al = (regs.rax & 0xFF) as u8;
+                match al {
+                    0x01 => {
+                        // PCI BIOS Present
+                        regs.rax = (regs.rax & 0xFFFF0000) | 0x0001;  // AL=01 (found)
+                        regs.rbx = 0x0210;  // Version 2.10
+                        regs.rcx = 0;       // Last bus number
+                        regs.rdx = 0x4350;  // "PC" signature
+                        regs.rflags &= !1;
+                    }
+                    _ => {
+                        // Other PCI functions - not supported
+                        regs.rax = (regs.rax & 0xFFFF00FF) | 0x8100;  // AH = 81 (not supported)
+                        regs.rflags |= 1;
+                    }
+                }
+            }
+            _ => {
+                // Unknown function
+                regs.rax = (regs.rax & 0xFFFF00FF) | 0x8600;
+                regs.rflags |= 1;
+            }
+        }
     }
 }
 
@@ -1057,8 +1316,9 @@ impl Firmware for Bios {
             0x10 => self.services.handle_int10(regs, memory),
             0x12 => self.services.handle_int12(regs, &self.config),
             0x13 => self.services.handle_int13(regs, memory),
-            0x15 => self.services.handle_int15(regs, &self.config),
+            0x15 => self.services.handle_int15(regs, &self.config, memory),
             0x16 => self.services.handle_int16(regs),
+            0x1A => self.services.handle_int1a(regs, &self.bda),
             _ => {
                 // Unknown interrupt
                 regs.rflags |= 1;  // Set carry flag

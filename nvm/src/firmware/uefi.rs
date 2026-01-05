@@ -175,6 +175,55 @@ impl EfiGuid {
         data3: 0x11d2,
         data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
     };
+    
+    pub const EFI_DEVICE_PATH_PROTOCOL_GUID: Self = Self {
+        data1: 0x09576e91,
+        data2: 0x6d3f,
+        data3: 0x11d2,
+        data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+    };
+    
+    pub const EFI_BLOCK_IO_PROTOCOL_GUID: Self = Self {
+        data1: 0x0964e5b21,
+        data2: 0x6459,
+        data3: 0x11d2,
+        data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+    };
+    
+    pub const EFI_DISK_IO_PROTOCOL_GUID: Self = Self {
+        data1: 0xce345171,
+        data2: 0xba0b,
+        data3: 0x11d2,
+        data4: [0x8e, 0x4f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+    };
+    
+    pub const EFI_SIMPLE_TEXT_INPUT_PROTOCOL_GUID: Self = Self {
+        data1: 0x387477c1,
+        data2: 0x69c7,
+        data3: 0x11d2,
+        data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+    };
+    
+    pub const EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL_GUID: Self = Self {
+        data1: 0x387477c2,
+        data2: 0x69c7,
+        data3: 0x11d2,
+        data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+    };
+    
+    pub const EFI_ACPI_20_TABLE_GUID: Self = Self {
+        data1: 0x8868e871,
+        data2: 0xe4f1,
+        data3: 0x11d3,
+        data4: [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81],
+    };
+    
+    pub const EFI_SMBIOS_TABLE_GUID: Self = Self {
+        data1: 0xeb9d2d31,
+        data2: 0x2d88,
+        data3: 0x11d3,
+        data4: [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d],
+    };
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +300,98 @@ impl UefiBootServices {
     /// Get memory map
     pub fn get_memory_map(&self) -> (&[EfiMemoryDescriptor], u64) {
         (&self.memory_map, self.memory_map_key)
+    }
+    
+    /// Write memory map to guest memory
+    pub fn write_memory_map(&self, memory: &mut [u8], buffer_addr: u64, buffer_size: u64) -> (u64, u64, u64) {
+        // EFI_MEMORY_DESCRIPTOR is 40 bytes (with padding)
+        const DESC_SIZE: usize = 40;
+        let map_size = self.memory_map.len() * DESC_SIZE;
+        
+        if (buffer_size as usize) < map_size {
+            return (0, map_size as u64, 0);
+        }
+        
+        let base = buffer_addr as usize;
+        for (i, desc) in self.memory_map.iter().enumerate() {
+            let offset = base + i * DESC_SIZE;
+            if offset + DESC_SIZE <= memory.len() {
+                // Type (4 bytes)
+                memory[offset..offset+4].copy_from_slice(&(desc.memory_type as u32).to_le_bytes());
+                // Padding (4 bytes)
+                memory[offset+4..offset+8].copy_from_slice(&0u32.to_le_bytes());
+                // PhysicalStart (8 bytes)
+                memory[offset+8..offset+16].copy_from_slice(&desc.physical_start.to_le_bytes());
+                // VirtualStart (8 bytes)
+                memory[offset+16..offset+24].copy_from_slice(&desc.virtual_start.to_le_bytes());
+                // NumberOfPages (8 bytes)
+                memory[offset+24..offset+32].copy_from_slice(&desc.number_of_pages.to_le_bytes());
+                // Attribute (8 bytes)
+                memory[offset+32..offset+40].copy_from_slice(&desc.attribute.to_le_bytes());
+            }
+        }
+        
+        (map_size as u64, DESC_SIZE as u64, self.memory_map_key)
+    }
+    
+    /// Free pages
+    pub fn free_pages(&mut self, addr: u64, pages: u64) {
+        // Remove from memory map
+        self.memory_map.retain(|desc| {
+            !(desc.physical_start == addr && desc.number_of_pages == pages)
+        });
+        self.memory_map_key += 1;
+    }
+    
+    /// Allocate pool (convenience wrapper)
+    pub fn allocate_pool(&mut self, size: u64, memory_type: EfiMemoryType) -> Option<u64> {
+        let pages = (size + 4095) / 4096;
+        self.allocate_pages(pages, memory_type)
+    }
+    
+    /// Register a protocol
+    pub fn install_protocol(&mut self, handle: u64, guid: EfiGuid, interface: u64) {
+        self.protocols.insert(guid, interface);
+    }
+    
+    /// Locate a protocol by GUID
+    pub fn locate_protocol(&self, guid: &EfiGuid) -> Option<u64> {
+        self.protocols.get(guid).copied()
+    }
+    
+    /// Create event
+    pub fn create_event(&mut self, event_type: u32, notify_tpl: u64, notify_function: u64, notify_context: u64) -> u64 {
+        let event = EfiEvent {
+            event_type,
+            notify_tpl,
+            notify_function,
+            notify_context,
+            signaled: false,
+        };
+        self.events.push(event);
+        (self.events.len() - 1) as u64
+    }
+    
+    /// Signal event
+    pub fn signal_event(&mut self, event_handle: u64) {
+        if let Some(event) = self.events.get_mut(event_handle as usize) {
+            event.signaled = true;
+        }
+    }
+    
+    /// Close event
+    pub fn close_event(&mut self, event_handle: u64) {
+        if (event_handle as usize) < self.events.len() {
+            // Mark as closed (we don't remove to preserve handles)
+            if let Some(event) = self.events.get_mut(event_handle as usize) {
+                event.event_type = 0;
+            }
+        }
+    }
+    
+    /// Register loaded image
+    pub fn register_loaded_image(&mut self, handle: u64, image: LoadedImageProtocol) {
+        self.loaded_images.insert(handle, image);
     }
     
     /// Exit boot services
@@ -818,49 +959,204 @@ impl Firmware for UefiFirmware {
         let service = regs.rax;
         
         match service {
-            // GetTime
+            // ==================== Runtime Services ====================
+            // GetTime (0x01)
             0x01 => {
                 let time = self.runtime_services.get_time();
-                // Write time to buffer pointed by RCX
-                let _ = time;
-                regs.rax = 0;  // EFI_SUCCESS
+                let buffer = regs.rcx as usize;
+                if buffer + 16 <= memory.len() {
+                    // Write EFI_TIME structure (16 bytes)
+                    memory[buffer..buffer+2].copy_from_slice(&time.year.to_le_bytes());
+                    memory[buffer+2] = time.month;
+                    memory[buffer+3] = time.day;
+                    memory[buffer+4] = time.hour;
+                    memory[buffer+5] = time.minute;
+                    memory[buffer+6] = time.second;
+                    memory[buffer+7] = 0; // Pad1
+                    memory[buffer+8..buffer+12].copy_from_slice(&time.nanosecond.to_le_bytes());
+                    memory[buffer+12..buffer+14].copy_from_slice(&time.timezone.to_le_bytes());
+                    memory[buffer+14] = time.daylight;
+                    memory[buffer+15] = 0; // Pad2
+                    regs.rax = 0;  // EFI_SUCCESS
+                } else {
+                    regs.rax = 0x8000000000000002;  // EFI_INVALID_PARAMETER
+                }
             }
-            // GetVariable
+            // SetTime (0x02)
             0x02 => {
+                let buffer = regs.rcx as usize;
+                if buffer + 16 <= memory.len() {
+                    let time = EfiTime {
+                        year: u16::from_le_bytes([memory[buffer], memory[buffer+1]]),
+                        month: memory[buffer+2],
+                        day: memory[buffer+3],
+                        hour: memory[buffer+4],
+                        minute: memory[buffer+5],
+                        second: memory[buffer+6],
+                        nanosecond: u32::from_le_bytes([memory[buffer+8], memory[buffer+9], memory[buffer+10], memory[buffer+11]]),
+                        timezone: i16::from_le_bytes([memory[buffer+12], memory[buffer+13]]),
+                        daylight: memory[buffer+14],
+                    };
+                    self.runtime_services.set_time(time);
+                    regs.rax = 0;
+                } else {
+                    regs.rax = 0x8000000000000002;
+                }
+            }
+            // GetVariable (0x03)
+            0x03 => {
+                // Variable name at RCX, GUID at RDX, attributes at R8, data size at R9
                 regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
             }
-            // SetVariable
-            0x03 => {
+            // SetVariable (0x04)
+            0x04 => {
                 regs.rax = 0;  // EFI_SUCCESS
             }
-            // AllocatePages
+            
+            // ==================== Boot Services ====================
+            // AllocatePages (0x10)
             0x10 => {
-                let pages = regs.rcx;
-                if let Some(addr) = self.boot_services.allocate_pages(pages, EfiMemoryType::LoaderData) {
-                    regs.rcx = addr;
-                    regs.rax = 0;
+                // RCX = AllocateType, RDX = MemoryType, R8 = Pages, R9 = Memory
+                let pages = regs.r8;
+                let memory_type = match regs.rdx as u32 {
+                    1 => EfiMemoryType::LoaderCode,
+                    2 => EfiMemoryType::LoaderData,
+                    3 => EfiMemoryType::BootServicesCode,
+                    4 => EfiMemoryType::BootServicesData,
+                    _ => EfiMemoryType::LoaderData,
+                };
+                if let Some(addr) = self.boot_services.allocate_pages(pages, memory_type) {
+                    // Write address to [R9]
+                    let out_ptr = regs.r9 as usize;
+                    if out_ptr + 8 <= memory.len() {
+                        memory[out_ptr..out_ptr+8].copy_from_slice(&addr.to_le_bytes());
+                    }
+                    regs.rax = 0;  // EFI_SUCCESS
                 } else {
                     regs.rax = 0x8000000000000009;  // EFI_OUT_OF_RESOURCES
                 }
             }
-            // GetMemoryMap
+            // FreePages (0x11)
             0x11 => {
-                let (map, key) = self.boot_services.get_memory_map();
-                // Would write map to buffer
-                let _ = map;
-                regs.rbx = key;
+                let addr = regs.rcx;
+                let pages = regs.rdx;
+                self.boot_services.free_pages(addr, pages);
                 regs.rax = 0;
             }
-            // ExitBootServices
+            // GetMemoryMap (0x12)
             0x12 => {
-                let map_key = regs.rcx;
+                // RCX = MemoryMapSize ptr, RDX = MemoryMap buffer, R8 = MapKey ptr,
+                // R9 = DescriptorSize ptr, stack = DescriptorVersion ptr
+                let size_ptr = regs.rcx as usize;
+                let buffer = regs.rdx;
+                let key_ptr = regs.r8 as usize;
+                let desc_size_ptr = regs.r9 as usize;
+                
+                // Read requested size
+                let requested_size = if size_ptr + 8 <= memory.len() {
+                    u64::from_le_bytes([
+                        memory[size_ptr], memory[size_ptr+1], memory[size_ptr+2], memory[size_ptr+3],
+                        memory[size_ptr+4], memory[size_ptr+5], memory[size_ptr+6], memory[size_ptr+7],
+                    ])
+                } else { 0 };
+                
+                let (map_size, desc_size, key) = self.boot_services.write_memory_map(memory, buffer, requested_size);
+                
+                // Write outputs
+                if size_ptr + 8 <= memory.len() {
+                    memory[size_ptr..size_ptr+8].copy_from_slice(&map_size.to_le_bytes());
+                }
+                if key_ptr + 8 <= memory.len() {
+                    memory[key_ptr..key_ptr+8].copy_from_slice(&key.to_le_bytes());
+                }
+                if desc_size_ptr + 8 <= memory.len() {
+                    memory[desc_size_ptr..desc_size_ptr+8].copy_from_slice(&desc_size.to_le_bytes());
+                }
+                
+                if map_size > requested_size && requested_size > 0 {
+                    regs.rax = 0x8000000000000005;  // EFI_BUFFER_TOO_SMALL
+                } else {
+                    regs.rax = 0;  // EFI_SUCCESS
+                }
+            }
+            // AllocatePool (0x13)
+            0x13 => {
+                let memory_type = match regs.rcx as u32 {
+                    1 => EfiMemoryType::LoaderCode,
+                    2 => EfiMemoryType::LoaderData,
+                    _ => EfiMemoryType::LoaderData,
+                };
+                let size = regs.rdx;
+                if let Some(addr) = self.boot_services.allocate_pool(size, memory_type) {
+                    let out_ptr = regs.r8 as usize;
+                    if out_ptr + 8 <= memory.len() {
+                        memory[out_ptr..out_ptr+8].copy_from_slice(&addr.to_le_bytes());
+                    }
+                    regs.rax = 0;
+                } else {
+                    regs.rax = 0x8000000000000009;
+                }
+            }
+            // FreePool (0x14)
+            0x14 => {
+                // Pool memory is tracked with pages
+                regs.rax = 0;
+            }
+            // CreateEvent (0x15)
+            0x15 => {
+                let event_type = regs.rcx as u32;
+                let notify_tpl = regs.rdx;
+                let notify_function = regs.r8;
+                let notify_context = regs.r9;
+                let handle = self.boot_services.create_event(event_type, notify_tpl, notify_function, notify_context);
+                // Return handle via stack parameter
+                regs.rax = 0;
+            }
+            // SignalEvent (0x16)
+            0x16 => {
+                self.boot_services.signal_event(regs.rcx);
+                regs.rax = 0;
+            }
+            // CloseEvent (0x17)
+            0x17 => {
+                self.boot_services.close_event(regs.rcx);
+                regs.rax = 0;
+            }
+            // ExitBootServices (0x20)
+            0x20 => {
+                let map_key = regs.rdx;
                 match self.boot_services.exit_boot_services(map_key) {
                     Ok(()) => regs.rax = 0,
                     Err(_) => regs.rax = 0x8000000000000002,  // EFI_INVALID_PARAMETER
                 }
             }
-            // ResetSystem
-            0x20 => {
+            // LocateProtocol (0x30)
+            0x30 => {
+                // RCX = Protocol GUID ptr, RDX = Registration (optional), R8 = Interface ptr
+                // For now, return EFI_NOT_FOUND for most protocols
+                regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
+            }
+            // LocateHandle (0x31)
+            0x31 => {
+                regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
+            }
+            // HandleProtocol (0x32)
+            0x32 => {
+                // RCX = Handle, RDX = Protocol GUID ptr, R8 = Interface ptr
+                regs.rax = 0x8000000000000003;  // EFI_UNSUPPORTED
+            }
+            // OpenProtocol (0x33)
+            0x33 => {
+                regs.rax = 0x8000000000000003;
+            }
+            // CloseProtocol (0x34)
+            0x34 => {
+                regs.rax = 0;
+            }
+            
+            // ==================== Runtime Services (0x40+) ====================
+            // ResetSystem (0x40)
+            0x40 => {
                 let reset_type = match regs.rcx {
                     0 => ResetType::Cold,
                     1 => ResetType::Warm,
@@ -870,13 +1166,25 @@ impl Firmware for UefiFirmware {
                 self.runtime_services.reset_system(reset_type);
                 regs.rax = 0;
             }
+            
+            // SetVirtualAddressMap (0x41)
+            0x41 => {
+                // Required for transitioning to virtual mode
+                regs.rax = 0;  // EFI_SUCCESS
+            }
+            
+            // ConvertPointer (0x42)
+            0x42 => {
+                regs.rax = 0;
+            }
+            
             _ => {
                 // Unknown service
+                log::debug!("UEFI: Unknown service {:#x}", service);
                 regs.rax = 0x8000000000000003;  // EFI_UNSUPPORTED
             }
         }
         
-        let _ = memory;
         Ok(())
     }
     

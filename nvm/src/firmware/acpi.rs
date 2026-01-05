@@ -997,7 +997,9 @@ mod tests {
         let fadt = Fadt::new(&config, DSDT_ADDR as u32, FACS_ADDR as u32);
         
         assert_eq!(&fadt.header.signature, b"FACP");
-        assert_eq!(fadt.dsdt, DSDT_ADDR as u32);
+        // Use ptr::read_unaligned for packed struct field access
+        let dsdt_val = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!(fadt.dsdt)) };
+        assert_eq!(dsdt_val, DSDT_ADDR as u32);
     }
 
     #[test]

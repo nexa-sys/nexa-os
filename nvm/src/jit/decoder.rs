@@ -947,6 +947,8 @@ impl X86Decoder {
             0x40..=0x4F => Mnemonic::Inc, // or REX prefix in 64-bit
             0x50..=0x57 => Mnemonic::Push,
             0x58..=0x5F => Mnemonic::Pop,
+            0x60 => Mnemonic::Pusha,  // PUSHA/PUSHAD (invalid in 64-bit mode)
+            0x61 => Mnemonic::Popa,   // POPA/POPAD (invalid in 64-bit mode)
             0x68 | 0x6A => Mnemonic::Push,
             0x70..=0x7F => Mnemonic::Jcc,
             0x80..=0x83 => Mnemonic::Add, // Actually depends on /r

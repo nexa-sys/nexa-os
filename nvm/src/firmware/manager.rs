@@ -883,11 +883,14 @@ mod tests {
         let mut memory = vec![0u8; 256 * 1024 * 1024];
         let context = manager.load_firmware(&mut memory).unwrap();
         
-        assert!(!context.real_mode);
-        assert_eq!(context.code_segment, 0x08);
-        // EFER should have LME and LMA set
-        assert!(context.efer & 0x0100 != 0);  // LME
-        assert!(context.efer & 0x0400 != 0);  // LMA
+        // UEFI starts in real mode at reset vector, firmware code transitions to long mode
+        // This matches real hardware behavior (SEC phase is 16-bit real mode)
+        assert!(context.real_mode);
+        assert_eq!(context.code_segment, 0xF000);  // Real mode segment
+        assert_eq!(context.entry_point, 0xFFFF0);  // Reset vector
+        // CR0, EFER, CR4 start at their reset values - firmware code will set them
+        assert_eq!(context.cr0, 0x0000_0010);  // ET bit only
+        assert_eq!(context.efer, 0);            // Not in long mode yet
     }
     
     #[test]
