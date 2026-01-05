@@ -63,7 +63,7 @@ pub mod profile;
 pub mod cache;
 pub mod readynow;
 
-use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicBool, Ordering}};
+use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::HashMap;
 
 use crate::cpu::VirtualCpu;
@@ -354,6 +354,24 @@ pub enum ExecutionTier {
 }
 
 impl ExecutionTier {
+    /// Convert to u8 for atomic storage
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Interpreter => 0,
+            Self::S1 => 1,
+            Self::S2 => 2,
+        }
+    }
+    
+    /// Convert from u8
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::S1,
+            2 => Self::S2,
+            _ => Self::Interpreter,
+        }
+    }
+    
     pub fn name(&self) -> &'static str {
         match self {
             Self::Interpreter => "Interpreter",
@@ -457,8 +475,8 @@ pub struct BlockMeta {
     pub guest_rip: u64,
     /// Block size in guest bytes
     pub guest_size: usize,
-    /// Current execution tier
-    pub tier: ExecutionTier,
+    /// Current execution tier (stored as AtomicU8 for lock-free updates)
+    tier: AtomicU8,
     /// Invocation count
     pub invocations: AtomicU64,
     /// Back-edge count (for loop detection)
@@ -480,14 +498,14 @@ impl Clone for BlockMeta {
         Self {
             guest_rip: self.guest_rip,
             guest_size: self.guest_size,
-            tier: self.tier.clone(),
-            invocations: AtomicU64::new(self.invocations.load(std::sync::atomic::Ordering::Relaxed)),
-            back_edges: AtomicU64::new(self.back_edges.load(std::sync::atomic::Ordering::Relaxed)),
+            tier: AtomicU8::new(self.tier.load(Ordering::Relaxed)),
+            invocations: AtomicU64::new(self.invocations.load(Ordering::Relaxed)),
+            back_edges: AtomicU64::new(self.back_edges.load(Ordering::Relaxed)),
             native_code: self.native_code,
             native_size: self.native_size,
             ir: self.ir.clone(),
-            valid: AtomicBool::new(self.valid.load(std::sync::atomic::Ordering::Relaxed)),
-            last_exec: AtomicU64::new(self.last_exec.load(std::sync::atomic::Ordering::Relaxed)),
+            valid: AtomicBool::new(self.valid.load(Ordering::Relaxed)),
+            last_exec: AtomicU64::new(self.last_exec.load(Ordering::Relaxed)),
         }
     }
 }
@@ -502,7 +520,7 @@ impl BlockMeta {
         Self {
             guest_rip,
             guest_size: 0,
-            tier: ExecutionTier::Interpreter,
+            tier: AtomicU8::new(ExecutionTier::Interpreter.as_u8()),
             invocations: AtomicU64::new(0),
             back_edges: AtomicU64::new(0),
             native_code: None,
@@ -510,6 +528,26 @@ impl BlockMeta {
             ir: None,
             valid: AtomicBool::new(true),
             last_exec: AtomicU64::new(0),
+        }
+    }
+    
+    /// Get current execution tier
+    pub fn get_tier(&self) -> ExecutionTier {
+        ExecutionTier::from_u8(self.tier.load(Ordering::Acquire))
+    }
+    
+    /// Set execution tier (only upgrades, never downgrades)
+    pub fn set_tier(&self, tier: ExecutionTier) {
+        let new_val = tier.as_u8();
+        let mut current = self.tier.load(Ordering::Relaxed);
+        // Only upgrade, never downgrade
+        while new_val > current {
+            match self.tier.compare_exchange_weak(
+                current, new_val, Ordering::Release, Ordering::Relaxed
+            ) {
+                Ok(_) => break,
+                Err(c) => current = c,
+            }
         }
     }
     
@@ -626,16 +664,7 @@ impl JitEngine {
         
         let rip = cpu.read_rip();
         
-        // Check code cache first
-        if let Some(entry) = self.code_cache.lookup(rip) {
-            self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-            log::debug!("[JIT] Cache hit at {:#x}, executing native", rip);
-            return self.execute_native(cpu, memory, entry);
-        }
-        
-        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-        
-        // Get or create block metadata
+        // Get or create block metadata and increment invocations
         let block = self.get_or_create_block(rip);
         let invocations = block.increment_invocations();
         
@@ -644,6 +673,23 @@ impl JitEngine {
         
         log::debug!("[JIT] Block {:#x}: invocations={}, tier={:?}", rip, invocations, tier);
         
+        // Check if we need to upgrade from S1 to S2
+        let current_tier = block.get_tier();
+        if tier == ExecutionTier::S2 && current_tier != ExecutionTier::S2 {
+            // Recompile with S2 optimizations
+            log::debug!("[JIT] Upgrading block {:#x} from {:?} to S2", rip, current_tier);
+            self.compile_s2(cpu, memory, rip, &block)?;
+        }
+        
+        // Check code cache for compiled code
+        if let Some(entry) = self.code_cache.lookup(rip) {
+            self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+            log::debug!("[JIT] Cache hit at {:#x}, executing native", rip);
+            return self.execute_native(cpu, memory, entry);
+        }
+        
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+        
         match tier {
             ExecutionTier::Interpreter => {
                 self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);
@@ -651,11 +697,9 @@ impl JitEngine {
             }
             ExecutionTier::S1 => {
                 // Compile with S1 if not already in code cache
-                if self.code_cache.lookup(rip).is_none() {
-                    log::debug!("[JIT] Compiling S1 for block {:#x}", rip);
-                    self.compile_s1(cpu, memory, rip, &block)?;
-                    log::debug!("[JIT] S1 compiled successfully for {:#x}", rip);
-                }
+                log::debug!("[JIT] Compiling S1 for block {:#x}", rip);
+                self.compile_s1(cpu, memory, rip, &block)?;
+                log::debug!("[JIT] S1 compiled successfully for {:#x}", rip);
                 self.stats.s1_execs.fetch_add(1, Ordering::Relaxed);
                 // Execute from code cache (compile_s1 stores there)
                 if let Some(code_ptr) = self.code_cache.lookup(rip) {
@@ -668,9 +712,7 @@ impl JitEngine {
             }
             ExecutionTier::S2 => {
                 // Compile with S2 if not already in code cache
-                if self.code_cache.lookup(rip).is_none() {
-                    self.compile_s2(cpu, memory, rip, &block)?;
-                }
+                self.compile_s2(cpu, memory, rip, &block)?;
                 self.stats.s2_execs.fetch_add(1, Ordering::Relaxed);
                 // Execute from code cache
                 if let Some(code_ptr) = self.code_cache.lookup(rip) {
@@ -748,6 +790,9 @@ impl JitEngine {
         };
         self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
         
+        // Update block tier to S1
+        _block.set_tier(ExecutionTier::S1);
+        
         let elapsed = start.elapsed().as_nanos() as u64;
         self.stats.compilation_time_ns.fetch_add(elapsed, Ordering::Relaxed);
         self.stats.s1_compilations.fetch_add(1, Ordering::Relaxed);
@@ -785,6 +830,9 @@ impl JitEngine {
             let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
             self.code_cache.replace(rip, s2_block.native)?;
         }
+        
+        // Update block tier to S2
+        block.set_tier(ExecutionTier::S2);
         
         let elapsed = start.elapsed().as_nanos() as u64;
         self.stats.compilation_time_ns.fetch_add(elapsed, Ordering::Relaxed);
@@ -969,7 +1017,7 @@ impl JitEngine {
                                 guest_size: meta.guest_size as u32,
                                 host_code: ptr,
                                 host_size: meta.native_size as u32,
-                                tier: match meta.tier {
+                                tier: match meta.get_tier() {
                                     ExecutionTier::Interpreter => CompileTier::Interpreter,
                                     ExecutionTier::S1 => CompileTier::S1,
                                     ExecutionTier::S2 => CompileTier::S2,

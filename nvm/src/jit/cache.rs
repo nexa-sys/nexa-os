@@ -223,10 +223,10 @@ impl CodeCache {
         // First invalidate existing block
         self.invalidate(rip);
         
-        // Allocate and copy code
+        // Allocate executable memory and copy code
         let code_len = code.len();
-        let code_box: Box<[u8]> = code.into_boxed_slice();
-        let host_ptr = Box::into_raw(code_box) as *const u8;
+        let host_ptr = self.allocate_code(&code)
+            .ok_or(CacheError::OutOfMemory)?;
         
         // Create new compiled block
         let block = CompiledBlock {

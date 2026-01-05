@@ -742,30 +742,78 @@ impl S2Compiler {
     fn codegen(&self, ir: &IrBlock, alloc: &RegisterAllocation, _profile: &ProfileDb) -> JitResult<Vec<u8>> {
         let mut code = Vec::new();
         
-        // Prologue - save callee-saved registers
-        for hreg in &[3, 5, 12, 13, 14, 15] { // rbx, rbp, r12-r15
-            code.push(0x50 + (hreg & 7)); // push
+        // Calculate spill size from allocation
+        let spill_size = alloc.spills.len() as i32 * 8;
+        
+        // Prologue:
+        // 1. Save R15 (callee-saved) - we use it as JitState pointer
+        // 2. mov r15, rdi - save JitState pointer to R15
+        // 3. Allocate spill slots if needed
+        
+        // push r15 (0x41 = REX.B, 0x57 = push r15)
+        code.extend_from_slice(&[0x41, 0x57]);
+        
+        // mov r15, rdi (0x49 = REX.W+REX.B, 0x89 = mov r/m64, r64, 0xFF = rdi -> r15)
+        code.extend_from_slice(&[0x49, 0x89, 0xFF]);
+        
+        // sub rsp, spill_size (if needed)
+        if spill_size > 0 {
+            if spill_size <= 127 {
+                code.extend_from_slice(&[0x48, 0x83, 0xEC, spill_size as u8]);
+            } else {
+                code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+                code.extend_from_slice(&(spill_size as u32).to_le_bytes());
+            }
         }
         
         // Emit code for each block
         for bb in &ir.blocks {
             for instr in &bb.instrs {
-                self.emit_instr(&mut code, instr, alloc)?;
+                self.emit_instr(&mut code, instr, alloc, spill_size)?;
             }
-            // Check if last instruction is a terminator
-            // (Terminators emit their own exit code in emit_instr)
         }
         
-        // Epilogue
-        for hreg in [15, 14, 13, 12, 5, 3].iter().rev() {
-            code.push(0x58 + (hreg & 7)); // pop
-        }
-        code.push(0xC3); // ret
+        // Default epilogue (for fallthrough) - return 0 (Normal exit with rip)
+        self.emit_epilogue(&mut code, spill_size, 0);
         
         Ok(code)
     }
     
-    fn emit_instr(&self, code: &mut Vec<u8>, instr: &IrInstr, alloc: &RegisterAllocation) -> JitResult<()> {
+    /// Emit epilogue that reads JitState.rip at runtime and encodes return value.
+    /// Return value format: (exit_kind << 56) | rip
+    fn emit_epilogue(&self, code: &mut Vec<u8>, spill_size: i32, exit_kind: u32) {
+        // add rsp, spill_size (if needed)
+        if spill_size > 0 {
+            if spill_size <= 127 {
+                code.extend_from_slice(&[0x48, 0x83, 0xC4, spill_size as u8]);
+            } else {
+                code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+                code.extend_from_slice(&(spill_size as u32).to_le_bytes());
+            }
+        }
+        
+        // Load JitState.rip into rax (r15 points to JitState, rip is at offset 0x80)
+        // mov rax, [r15 + 0x80]
+        code.extend_from_slice(&[0x49, 0x8B, 0x87, 0x80, 0x00, 0x00, 0x00]);
+        
+        // If exit_kind != 0, OR the kind into high byte of rax
+        if exit_kind != 0 {
+            let kind_shifted = (exit_kind as u64) << 56;
+            // mov r11, imm64
+            code.extend_from_slice(&[0x49, 0xBB]);
+            code.extend_from_slice(&kind_shifted.to_le_bytes());
+            // or rax, r11
+            code.extend_from_slice(&[0x4C, 0x09, 0xD8]);
+        }
+        
+        // pop r15
+        code.extend_from_slice(&[0x41, 0x5F]);
+        
+        // ret
+        code.push(0xC3);
+    }
+    
+    fn emit_instr(&self, code: &mut Vec<u8>, instr: &IrInstr, alloc: &RegisterAllocation, spill_size: i32) -> JitResult<()> {
         // SSA style: dst is in instr.dst, IrOp contains only operands
         let dst = instr.dst;
         
@@ -909,13 +957,14 @@ impl S2Compiler {
                 }
             }
             IrOp::Ret => {
-                // Will be handled by epilogue
+                // Return with normal exit (exit_kind = 0)
+                self.emit_epilogue(code, spill_size, 0);
             }
             IrOp::Hlt => {
-                // Return to runtime
+                // Return with halt exit (exit_kind = 1)
+                self.emit_epilogue(code, spill_size, 1);
             }
             IrOp::Exit(reason) => {
-                // mov eax, exit_code; ret
                 let exit_code = match reason {
                     ExitReason::Normal => 0u32,
                     ExitReason::Halt => 1,
@@ -927,8 +976,7 @@ impl S2Compiler {
                     ExitReason::Hypercall => 0x600,
                     ExitReason::Reset => 0x700,
                 };
-                code.push(0xB8);
-                code.extend_from_slice(&exit_code.to_le_bytes());
+                self.emit_epilogue(code, spill_size, exit_code);
             }
             IrOp::Nop => {
                 code.push(0x90);
