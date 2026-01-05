@@ -115,6 +115,42 @@ pub struct CacheStats {
     pub s2_compiles: AtomicU64,
     pub tier_promotions: AtomicU64,
     pub expansions: AtomicU64,
+    pub smart_evictions: AtomicU64,
+    pub blocks_persisted: AtomicU64,
+    pub blocks_restored: AtomicU64,
+}
+
+/// Candidate for smart eviction
+#[derive(Debug, Clone)]
+struct SmartEvictCandidate {
+    rip: u64,
+    tier: CompileTier,
+    last_access: u64,
+    exec_count: u64,
+    host_size: u32,
+}
+
+/// Result of smart eviction
+#[derive(Debug)]
+pub struct SmartEvictResult {
+    /// Blocks that should be persisted to disk before removal
+    pub to_persist: Vec<BlockPersistInfo>,
+    /// Blocks that can be discarded immediately
+    pub to_discard: Vec<u64>,
+    /// RIPs of blocks in to_persist (for removal after persistence)
+    pub persisted_rips: Vec<u64>,
+    /// Total bytes that will be freed
+    pub bytes_to_free: u64,
+}
+
+/// Information about an eviction candidate
+#[derive(Debug, Clone)]
+pub struct EvictionCandidateInfo {
+    pub rip: u64,
+    pub tier: CompileTier,
+    pub exec_count: u64,
+    pub last_access: u64,
+    pub host_size: u32,
 }
 
 impl Default for CacheStats {
@@ -128,6 +164,9 @@ impl Default for CacheStats {
             s2_compiles: AtomicU64::new(0),
             tier_promotions: AtomicU64::new(0),
             expansions: AtomicU64::new(0),
+            smart_evictions: AtomicU64::new(0),
+            blocks_persisted: AtomicU64::new(0),
+            blocks_restored: AtomicU64::new(0),
         }
     }
 }
@@ -389,7 +428,7 @@ impl CodeCache {
         false
     }
     
-    /// Evict LRU blocks to free space
+    /// Evict LRU blocks to free space (legacy simple version)
     fn evict_lru(&self, needed: u64) -> Result<(), CacheError> {
         let mut freed = 0u64;
         let mut to_remove = Vec::new();
@@ -432,6 +471,187 @@ impl CodeCache {
         Ok(())
     }
     
+    /// Smart eviction with tiered policy
+    /// 
+    /// Returns blocks that should be persisted to disk before removal.
+    /// Caller is responsible for actually persisting them via NReady!
+    /// 
+    /// # Strategy
+    /// - S2 blocks: Always return for persistence (expensive to recompile)
+    /// - S1 blocks: Return for persistence if exec_count >= threshold
+    /// - Interpreter: Just discard (shouldn't be in cache anyway)
+    pub fn smart_evict(
+        &self, 
+        needed: u64,
+        s1_preserve_threshold: u64,
+    ) -> Result<SmartEvictResult, CacheError> {
+        let mut freed = 0u64;
+        let mut to_persist: Vec<BlockPersistInfo> = Vec::new();
+        let mut to_discard: Vec<u64> = Vec::new();
+        
+        // Collect candidates with full info
+        let blocks = self.blocks.read().unwrap();
+        let mut candidates: Vec<_> = blocks.iter()
+            .filter(|(_, b)| !b.invalidated)
+            .map(|(&rip, b)| {
+                SmartEvictCandidate {
+                    rip,
+                    tier: b.tier,
+                    last_access: b.last_access.load(Ordering::Relaxed),
+                    exec_count: b.exec_count.load(Ordering::Relaxed),
+                    host_size: b.host_size,
+                }
+            })
+            .collect();
+        drop(blocks);
+        
+        // Sort: S1 first (cheaper to recompile), then by last access
+        candidates.sort_by(|a, b| {
+            // Prefer evicting S1 over S2
+            match (a.tier, b.tier) {
+                (CompileTier::S1, CompileTier::S2) => std::cmp::Ordering::Less,
+                (CompileTier::S2, CompileTier::S1) => std::cmp::Ordering::Greater,
+                _ => a.last_access.cmp(&b.last_access), // Oldest first
+            }
+        });
+        
+        // Select blocks to evict
+        let candidates_to_evict: Vec<_> = candidates.into_iter()
+            .take_while(|c| {
+                if freed >= needed {
+                    return false;
+                }
+                freed += c.host_size as u64;
+                true
+            })
+            .collect();
+        
+        if freed < needed {
+            return Err(CacheError::OutOfMemory);
+        }
+        
+        // Categorize blocks
+        let blocks = self.blocks.read().unwrap();
+        for candidate in &candidates_to_evict {
+            if let Some(block) = blocks.get(&candidate.rip) {
+                let should_persist = match candidate.tier {
+                    CompileTier::S2 => true, // Always persist S2
+                    CompileTier::S1 => candidate.exec_count >= s1_preserve_threshold,
+                    CompileTier::Interpreter => false,
+                };
+                
+                if should_persist && !block.host_code.is_null() {
+                    // Copy native code for persistence
+                    let native_code = unsafe {
+                        std::slice::from_raw_parts(block.host_code, block.host_size as usize).to_vec()
+                    };
+                    
+                    to_persist.push(BlockPersistInfo {
+                        guest_rip: block.guest_rip,
+                        guest_size: block.guest_size,
+                        host_size: block.host_size,
+                        tier: block.tier,
+                        exec_count: block.exec_count.load(Ordering::Relaxed),
+                        guest_instrs: block.guest_instrs,
+                        guest_checksum: block.guest_checksum,
+                        native_code,
+                    });
+                } else {
+                    to_discard.push(candidate.rip);
+                }
+            }
+        }
+        drop(blocks);
+        
+        // Add persisted blocks to discard list (after caller persists them)
+        let persisted_rips: Vec<u64> = to_persist.iter().map(|b| b.guest_rip).collect();
+        
+        Ok(SmartEvictResult {
+            to_persist,
+            to_discard,
+            persisted_rips,
+            bytes_to_free: freed,
+        })
+    }
+    
+    /// Actually remove blocks from cache
+    /// 
+    /// Call this after persisting blocks returned by smart_evict()
+    pub fn remove_blocks(&self, rips: &[u64]) -> u64 {
+        let mut blocks = self.blocks.write().unwrap();
+        let mut regions = self.regions.write().unwrap();
+        let mut freed = 0u64;
+        
+        for &rip in rips {
+            if let Some(block) = blocks.remove(&rip) {
+                regions.remove(&block.guest_rip);
+                freed += block.host_size as u64;
+                self.total_size.fetch_sub(block.host_size as u64, Ordering::Relaxed);
+                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        
+        freed
+    }
+    
+    /// Restore a block from persisted data
+    /// 
+    /// Used when a previously evicted block becomes hot again.
+    pub fn restore_block(&self, persist_info: &BlockPersistInfo) -> Result<(), CacheError> {
+        // Allocate executable memory
+        let host_ptr = self.allocate_code(&persist_info.native_code)
+            .ok_or(CacheError::OutOfMemory)?;
+        
+        // Create compiled block
+        let block = CompiledBlock {
+            guest_rip: persist_info.guest_rip,
+            guest_size: persist_info.guest_size,
+            host_code: host_ptr,
+            host_size: persist_info.host_size,
+            tier: persist_info.tier,
+            exec_count: AtomicU64::new(persist_info.exec_count),
+            last_access: AtomicU64::new(self.epoch.load(Ordering::Relaxed)),
+            guest_instrs: persist_info.guest_instrs,
+            guest_checksum: persist_info.guest_checksum,
+            depends_on: Vec::new(),
+            invalidated: false,
+        };
+        
+        self.insert(block)
+    }
+    
+    /// Get current memory pressure level
+    pub fn memory_pressure(&self) -> f64 {
+        let used = self.total_size.load(Ordering::Relaxed) as f64;
+        let max = self.current_max_size.load(Ordering::Relaxed) as f64;
+        if max > 0.0 { used / max } else { 0.0 }
+    }
+    
+    /// Check if cache is under memory pressure
+    pub fn is_under_pressure(&self) -> bool {
+        self.memory_pressure() > 0.8 // 80% threshold
+    }
+    
+    /// Get blocks eligible for eviction (sorted by coldness)
+    pub fn get_eviction_candidates(&self, count: usize) -> Vec<EvictionCandidateInfo> {
+        let blocks = self.blocks.read().unwrap();
+        let mut candidates: Vec<_> = blocks.iter()
+            .filter(|(_, b)| !b.invalidated)
+            .map(|(&rip, b)| EvictionCandidateInfo {
+                rip,
+                tier: b.tier,
+                exec_count: b.exec_count.load(Ordering::Relaxed),
+                last_access: b.last_access.load(Ordering::Relaxed),
+                host_size: b.host_size,
+            })
+            .collect();
+        
+        // Sort by last access (oldest = coldest first)
+        candidates.sort_by_key(|c| c.last_access);
+        candidates.truncate(count);
+        candidates
+    }
+
     /// Check if a block should be promoted to S2
     pub fn should_promote(&self, rip: u64, s2_threshold: u64) -> bool {
         let blocks = self.blocks.read().unwrap();

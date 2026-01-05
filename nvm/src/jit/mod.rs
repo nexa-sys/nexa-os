@@ -62,9 +62,10 @@ pub mod codegen;
 pub mod profile;
 pub mod cache;
 pub mod nready;
+pub mod eviction;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::cpu::VirtualCpu;
 use crate::memory::{PhysicalMemory, AddressSpace};
@@ -76,8 +77,9 @@ pub use compiler_s1::S1Compiler;
 pub use compiler_s2::{S2Compiler, S2Config};
 pub use codegen::CodeGen;
 pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
-pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo};
-pub use nready::{NReadyCache, NativeBlockInfo};
+pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
+pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock};
+pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
 
 // ============================================================================
 // JIT CPU State - Direct access structure for native code
@@ -639,6 +641,12 @@ pub struct JitStats {
     pub nready_loads: AtomicU64,
     /// Total compilation time (ns)
     pub compilation_time_ns: AtomicU64,
+    /// Smart evictions triggered
+    pub smart_evictions: AtomicU64,
+    /// Blocks evicted to disk
+    pub blocks_evicted_to_disk: AtomicU64,
+    /// Blocks restored from disk
+    pub blocks_restored: AtomicU64,
 }
 
 /// The main JIT execution engine
@@ -663,6 +671,8 @@ pub struct JitEngine {
     profile_db: ProfileDb,
     /// NReady! cache
     nready: Option<NReadyCache>,
+    /// Hotness tracker for smart eviction
+    hotness_tracker: HotnessTracker,
     /// Statistics
     stats: Arc<JitStats>,
     /// Is engine running?
@@ -696,7 +706,12 @@ impl JitEngine {
         let nready = if config.nready_enabled {
             let cache_dir = config.nready_path.clone()
                 .unwrap_or_else(|| "/tmp/nvm-jit".to_string());
-            Some(NReadyCache::new(&cache_dir, instance_id))
+            let cache = NReadyCache::new(&cache_dir, instance_id);
+            // Ensure evicted blocks directory exists
+            if let Err(e) = cache.ensure_evicted_dir() {
+                log::warn!("[NReady!] Failed to create evicted dir: {:?}", e);
+            }
+            Some(cache)
         } else {
             None
         };
@@ -720,6 +735,7 @@ impl JitEngine {
             blocks: RwLock::new(HashMap::new()),
             profile_db: ProfileDb::new(config.profile_db_size),
             nready,
+            hotness_tracker: HotnessTracker::new(),
             stats: Arc::new(JitStats::default()),
             running: AtomicBool::new(false),
             logged_first_s1: AtomicBool::new(false),
@@ -800,6 +816,9 @@ impl JitEngine {
             }
         }
         
+        // Record execution in hotness tracker
+        self.hotness_tracker.record_execution(rip);
+        
         // Check if we need to upgrade from S1 to S2
         if tier == ExecutionTier::S2 && current_tier != ExecutionTier::S2 {
             self.compile_s2(cpu, memory, rip, &block)?;
@@ -813,6 +832,15 @@ impl JitEngine {
         }
         
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+        
+        // Try to restore from disk if this block was previously evicted
+        if self.try_restore_block(rip)? {
+            // Block restored, execute it
+            if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                log::debug!("[JIT] Executing restored block {:#x}", rip);
+                return self.execute_native(cpu, memory, code_ptr);
+            }
+        }
         
         match tier {
             ExecutionTier::Interpreter => {
@@ -893,9 +921,21 @@ impl JitEngine {
         
         log::debug!("[JIT] S1 compiled {:#x}: {} bytes of native code", rip, native_len);
         
-        // Allocate executable memory and copy code
-        let host_ptr = self.code_cache.allocate_code(&s1_block.native)
-            .ok_or(JitError::CodeCacheFull)?;
+        // Try to allocate executable memory, with smart eviction if needed
+        let host_ptr = match self.code_cache.allocate_code(&s1_block.native) {
+            Some(ptr) => ptr,
+            None => {
+                // Cache is full - perform smart eviction instead of failing
+                self.perform_smart_eviction(native_len as u64)?;
+                
+                // Retry allocation
+                self.code_cache.allocate_code(&s1_block.native)
+                    .ok_or(JitError::CodeCacheFull)?
+            }
+        };
+        
+        // Register block in hotness tracker
+        self.hotness_tracker.register_block(rip, CompileTier::S1);
         
         // Count instructions in IR
         let guest_instrs: u32 = s1_block.ir.blocks.iter()
@@ -916,7 +956,28 @@ impl JitEngine {
             depends_on: Vec::new(),
             invalidated: false,
         };
-        self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
+        
+        // Insert with smart eviction on failure
+        if let Err(_) = self.code_cache.insert(block) {
+            self.perform_smart_eviction(native_len as u64)?;
+            // Recreate block since insert consumed it
+            let host_ptr = self.code_cache.allocate_code(&s1_block.native)
+                .ok_or(JitError::CodeCacheFull)?;
+            let block = CompiledBlock {
+                guest_rip: rip,
+                guest_size: s1_block.guest_size,
+                host_code: host_ptr,
+                host_size: native_len as u32,
+                tier: CompileTier::S1,
+                exec_count: AtomicU64::new(0),
+                last_access: AtomicU64::new(0),
+                guest_instrs,
+                guest_checksum: cache::compute_checksum(&guest_code[..s1_block.guest_size as usize]),
+                depends_on: Vec::new(),
+                invalidated: false,
+            };
+            self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
+        }
         
         // Update block tier to S1
         _block.set_tier(ExecutionTier::S1);
@@ -946,8 +1007,15 @@ impl JitEngine {
             let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
             let len = s2_block.native.len();
             
-            // Replace in code cache
-            self.code_cache.replace(rip, s2_block.native)?;
+            // Replace in code cache (with smart eviction if needed)
+            if let Err(_) = self.code_cache.replace(rip, s2_block.native.clone()) {
+                self.perform_smart_eviction(len as u64)?;
+                self.code_cache.replace(rip, s2_block.native)?;
+            }
+            
+            // Update hotness tracker tier
+            self.hotness_tracker.update_tier(rip, CompileTier::S2);
+            
             len
         } else if let Some(ref _ir) = block.ir {
             // We have existing IR, find S1 block somehow
@@ -1285,6 +1353,158 @@ impl JitEngine {
         &self.config
     }
     
+    // ========================================================================
+    // Smart Eviction - Tiered Code Cache Management
+    // ========================================================================
+    
+    /// Perform smart eviction to free space in code cache
+    /// 
+    /// Strategy:
+    /// 1. Select coldest blocks using hotness tracker
+    /// 2. S2 blocks: Always persist to disk (expensive to recompile)
+    /// 3. S1 blocks: Persist if hot enough, otherwise discard
+    /// 4. Remove blocks from cache after persistence
+    fn perform_smart_eviction(&self, needed: u64) -> JitResult<()> {
+        log::debug!("[JIT] Smart eviction triggered: need {} bytes", needed);
+        
+        self.stats.smart_evictions.fetch_add(1, Ordering::Relaxed);
+        
+        // S1 preserve threshold: blocks with 1000+ executions worth saving
+        const S1_PRESERVE_THRESHOLD: u64 = 1000;
+        
+        // Use code cache's smart eviction
+        let evict_result = self.code_cache.smart_evict(needed, S1_PRESERVE_THRESHOLD)
+            .map_err(|_| JitError::CodeCacheFull)?;
+        
+        log::debug!("[JIT] Smart evict selected: {} to persist, {} to discard",
+            evict_result.to_persist.len(),
+            evict_result.to_discard.len());
+        
+        // Persist blocks to disk via NReady!
+        if !evict_result.to_persist.is_empty() {
+            if let Some(ref nready) = self.nready {
+                for block_info in &evict_result.to_persist {
+                    let evictable = EvictableBlock {
+                        rip: block_info.guest_rip,
+                        tier: block_info.tier,
+                        native_code: block_info.native_code.clone(),
+                        guest_size: block_info.guest_size,
+                        guest_instrs: block_info.guest_instrs,
+                        guest_checksum: block_info.guest_checksum,
+                        exec_count: block_info.exec_count,
+                        ir_data: None, // TODO: serialize IR if available
+                    };
+                    
+                    match nready.evict_block(&evictable) {
+                        Ok(result) => {
+                            // Record in hotness tracker's evicted index
+                            self.hotness_tracker.evicted_index.record_eviction(EvictedBlockInfo {
+                                rip: block_info.guest_rip,
+                                tier: block_info.tier,
+                                exec_count: block_info.exec_count,
+                                guest_checksum: block_info.guest_checksum,
+                                evicted_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0),
+                                persist_path: result.path,
+                                has_native: result.has_native,
+                                has_ir: result.has_ir,
+                            });
+                            self.hotness_tracker.mark_evicted(block_info.guest_rip);
+                            self.stats.blocks_evicted_to_disk.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            log::warn!("[JIT] Failed to evict block {:#x} to disk: {:?}", 
+                                block_info.guest_rip, e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Remove all selected blocks from cache
+        let mut all_rips: Vec<u64> = evict_result.to_discard.clone();
+        all_rips.extend(evict_result.persisted_rips.iter());
+        
+        let freed = self.code_cache.remove_blocks(&all_rips);
+        log::debug!("[JIT] Smart eviction freed {} bytes", freed);
+        
+        Ok(())
+    }
+    
+    /// Try to restore a block from disk if it was previously evicted
+    /// 
+    /// Called when a cache miss occurs for a block that might be in the evicted index.
+    /// Returns true if restoration was successful.
+    fn try_restore_block(&self, rip: u64) -> JitResult<bool> {
+        // Check if this block was evicted
+        if let Some(_evicted_info) = self.hotness_tracker.can_restore(rip) {
+            if let Some(ref nready) = self.nready {
+                match nready.restore_block(rip) {
+                    Ok(Some(restored)) => {
+                        log::debug!("[JIT] Restoring block {:#x} from disk (native={})",
+                            rip, restored.can_load_directly());
+                        
+                        if let Some(native_code) = restored.native_code {
+                            // Directly install native code
+                            let host_ptr = self.code_cache.allocate_code(&native_code)
+                                .ok_or(JitError::CodeCacheFull)?;
+                            
+                            let block = CompiledBlock {
+                                guest_rip: rip,
+                                guest_size: restored.guest_size,
+                                host_code: host_ptr,
+                                host_size: native_code.len() as u32,
+                                tier: restored.tier,
+                                exec_count: AtomicU64::new(restored.exec_count),
+                                last_access: AtomicU64::new(0),
+                                guest_instrs: restored.guest_instrs,
+                                guest_checksum: restored.guest_checksum,
+                                depends_on: Vec::new(),
+                                invalidated: false,
+                            };
+                            
+                            self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
+                        } else {
+                            // Native code stale, but we can use IR if available
+                            // For now, return false to trigger recompilation
+                            log::debug!("[JIT] Restored block {:#x} has stale native code, needs recompile", rip);
+                            return Ok(false);
+                        }
+                        
+                        // Update tracker
+                        self.hotness_tracker.mark_restored(rip);
+                        self.stats.blocks_restored.fetch_add(1, Ordering::Relaxed);
+                        
+                        return Ok(true);
+                    }
+                    Ok(None) => {
+                        // Block not found on disk, maybe it was deleted
+                        log::debug!("[JIT] Block {:#x} not found on disk", rip);
+                    }
+                    Err(e) => {
+                        log::warn!("[JIT] Failed to restore block {:#x}: {:?}", rip, e);
+                    }
+                }
+            }
+        }
+        
+        Ok(false)
+    }
+    
+    /// Get hotness tracker snapshot for monitoring
+    pub fn hotness_snapshot(&self) -> HotnessSnapshot {
+        self.hotness_tracker.get_stats()
+    }
+    
+    /// Get evicted blocks disk usage
+    pub fn evicted_disk_usage(&self) -> u64 {
+        self.nready.as_ref()
+            .map(|n| n.evicted_disk_usage())
+            .unwrap_or(0)
+    }
+
     /// Shutdown the JIT engine
     /// 
     /// This saves NReady! cache if auto_save is enabled.

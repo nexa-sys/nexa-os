@@ -1296,6 +1296,338 @@ impl CacheStats {
     }
 }
 
+// ============================================================================
+// Incremental Eviction/Restoration API
+// ============================================================================
+
+/// Information needed to evict a single block
+#[derive(Debug, Clone)]
+pub struct EvictableBlock {
+    pub rip: u64,
+    pub tier: CompileTier,
+    pub native_code: Vec<u8>,
+    pub guest_size: u32,
+    pub guest_instrs: u32,
+    pub guest_checksum: u64,
+    pub exec_count: u64,
+    /// Optional IR for faster recompilation
+    pub ir_data: Option<Vec<u8>>,
+}
+
+/// Result of an eviction operation
+#[derive(Debug)]
+pub struct EvictionPersistResult {
+    pub rip: u64,
+    pub path: String,
+    pub bytes_written: usize,
+    pub has_native: bool,
+    pub has_ir: bool,
+}
+
+impl NReadyCache {
+    // ========================================================================
+    // Single-Block Eviction (for CodeCache pressure)
+    // ========================================================================
+    
+    /// Evict a single block to disk
+    /// 
+    /// This is used when CodeCache is full and we need to free space.
+    /// The block can be restored later if it becomes hot again.
+    pub fn evict_block(&self, block: &EvictableBlock) -> JitResult<EvictionPersistResult> {
+        let path = self.evicted_block_path(block.rip);
+        let mut data = Vec::new();
+        
+        // Header: magic + version + flags
+        data.extend_from_slice(b"NVEV"); // NVM EVicted block
+        data.extend_from_slice(&self.jit_version.to_le_bytes());
+        data.push(self.arch.to_u8());
+        
+        // Flags: bit0 = has_native, bit1 = has_ir
+        let has_native = !block.native_code.is_empty();
+        let has_ir = block.ir_data.is_some();
+        let flags: u8 = (has_native as u8) | ((has_ir as u8) << 1);
+        data.push(flags);
+        data.extend_from_slice(&[0, 0]); // Padding
+        
+        // Block metadata (32 bytes)
+        data.extend_from_slice(&block.rip.to_le_bytes());         // 8
+        data.extend_from_slice(&block.guest_size.to_le_bytes());  // 4
+        data.push(match block.tier {                              // 1
+            CompileTier::Interpreter => 0,
+            CompileTier::S1 => 1,
+            CompileTier::S2 => 2,
+        });
+        data.extend_from_slice(&[0, 0, 0]); // Padding             // 3
+        data.extend_from_slice(&block.guest_instrs.to_le_bytes());// 4
+        data.extend_from_slice(&block.guest_checksum.to_le_bytes()); // 8
+        data.extend_from_slice(&block.exec_count.to_le_bytes());  // 8
+        
+        // Native code (if present)
+        if has_native {
+            data.extend_from_slice(&(block.native_code.len() as u32).to_le_bytes());
+            data.extend_from_slice(&block.native_code);
+        }
+        
+        // IR data (if present)
+        if let Some(ref ir) = block.ir_data {
+            data.extend_from_slice(&(ir.len() as u32).to_le_bytes());
+            data.extend_from_slice(ir);
+        }
+        
+        // Write to disk
+        let mut file = File::create(&path)
+            .map_err(|_| JitError::IoError)?;
+        file.write_all(&data)
+            .map_err(|_| JitError::IoError)?;
+        
+        log::debug!("[NReady!] Evicted block {:#x} to {} ({} bytes, native={}, ir={})",
+            block.rip, path, data.len(), has_native, has_ir);
+        
+        Ok(EvictionPersistResult {
+            rip: block.rip,
+            path,
+            bytes_written: data.len(),
+            has_native,
+            has_ir,
+        })
+    }
+    
+    /// Restore a previously evicted block from disk
+    /// 
+    /// Returns the block data if found and compatible, None otherwise.
+    pub fn restore_block(&self, rip: u64) -> JitResult<Option<RestoredBlock>> {
+        let path = self.evicted_block_path(rip);
+        
+        let mut file = match File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return Ok(None), // Block not found
+        };
+        
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|_| JitError::IoError)?;
+        
+        // Parse header
+        if data.len() < 12 {
+            return Err(JitError::InvalidFormat);
+        }
+        
+        if &data[0..4] != b"NVEV" {
+            return Err(JitError::InvalidFormat);
+        }
+        
+        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let arch = Architecture::from_u8(data[8])
+            .ok_or(JitError::InvalidFormat)?;
+        
+        // Version/arch mismatch means native code is stale
+        let version_match = version == self.jit_version && arch == self.arch;
+        
+        let flags = data[9];
+        let has_native = (flags & 1) != 0;
+        let has_ir = (flags & 2) != 0;
+        
+        // Parse metadata
+        let mut offset = 12;
+        if offset + 32 > data.len() {
+            return Err(JitError::InvalidFormat);
+        }
+        
+        let stored_rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+        if stored_rip != rip {
+            return Err(JitError::InvalidFormat);
+        }
+        offset += 8;
+        
+        let guest_size = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+        offset += 4;
+        
+        let tier = match data[offset] {
+            0 => CompileTier::Interpreter,
+            1 => CompileTier::S1,
+            _ => CompileTier::S2,
+        };
+        offset += 4; // tier + padding
+        
+        let guest_instrs = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+        offset += 4;
+        
+        let guest_checksum = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+        offset += 8;
+        
+        let exec_count = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+        offset += 8;
+        
+        // Parse native code (only if version matches)
+        let native_code = if has_native && version_match {
+            if offset + 4 > data.len() {
+                return Err(JitError::InvalidFormat);
+            }
+            let native_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            offset += 4;
+            
+            if offset + native_len > data.len() {
+                return Err(JitError::InvalidFormat);
+            }
+            let code = data[offset..offset+native_len].to_vec();
+            offset += native_len;
+            Some(code)
+        } else if has_native {
+            // Skip native code if version mismatch
+            if offset + 4 > data.len() {
+                return Err(JitError::InvalidFormat);
+            }
+            let native_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            offset += 4 + native_len;
+            None
+        } else {
+            None
+        };
+        
+        // Parse IR (usually backward compatible)
+        let ir_data = if has_ir {
+            if offset + 4 > data.len() {
+                None
+            } else {
+                let ir_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+                offset += 4;
+                
+                if offset + ir_len <= data.len() {
+                    Some(data[offset..offset+ir_len].to_vec())
+                } else {
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
+        log::debug!("[NReady!] Restored block {:#x} from {} (native={}, ir={})",
+            rip, path, native_code.is_some(), ir_data.is_some());
+        
+        // Optionally delete the eviction file after successful restore
+        let _ = std::fs::remove_file(&path);
+        
+        Ok(Some(RestoredBlock {
+            rip,
+            tier,
+            guest_size,
+            guest_instrs,
+            guest_checksum,
+            exec_count,
+            native_code,
+            ir_data,
+        }))
+    }
+    
+    /// Check if an evicted block exists on disk
+    pub fn has_evicted_block(&self, rip: u64) -> bool {
+        Path::new(&self.evicted_block_path(rip)).exists()
+    }
+    
+    /// Delete an evicted block from disk
+    pub fn delete_evicted_block(&self, rip: u64) -> JitResult<()> {
+        let path = self.evicted_block_path(rip);
+        std::fs::remove_file(&path).map_err(|_| JitError::IoError)
+    }
+    
+    /// Get path for an evicted block
+    fn evicted_block_path(&self, rip: u64) -> String {
+        format!("{}/evicted/{:016x}.nvev", self.cache_dir, rip)
+    }
+    
+    /// Ensure evicted blocks directory exists
+    pub fn ensure_evicted_dir(&self) -> JitResult<()> {
+        let dir = format!("{}/evicted", self.cache_dir);
+        std::fs::create_dir_all(&dir).map_err(|_| JitError::IoError)
+    }
+    
+    /// List all evicted block RIPs
+    pub fn list_evicted_blocks(&self) -> Vec<u64> {
+        let dir = format!("{}/evicted", self.cache_dir);
+        let mut rips = Vec::new();
+        
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.ends_with(".nvev") {
+                        let hex = &name[..name.len() - 5]; // Remove .nvev
+                        if let Ok(rip) = u64::from_str_radix(hex, 16) {
+                            rips.push(rip);
+                        }
+                    }
+                }
+            }
+        }
+        
+        rips
+    }
+    
+    /// Get total size of evicted blocks on disk
+    pub fn evicted_disk_usage(&self) -> u64 {
+        let dir = format!("{}/evicted", self.cache_dir);
+        let mut total = 0u64;
+        
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    total += meta.len();
+                }
+            }
+        }
+        
+        total
+    }
+    
+    // ========================================================================
+    // Batch Operations
+    // ========================================================================
+    
+    /// Evict multiple blocks in a batch
+    pub fn evict_blocks(&self, blocks: &[EvictableBlock]) -> Vec<JitResult<EvictionPersistResult>> {
+        // Ensure directory exists
+        if let Err(e) = self.ensure_evicted_dir() {
+            return blocks.iter().map(|_| Err(e.clone())).collect();
+        }
+        
+        blocks.iter().map(|b| self.evict_block(b)).collect()
+    }
+    
+    /// Try to restore multiple blocks
+    pub fn restore_blocks(&self, rips: &[u64]) -> Vec<Option<RestoredBlock>> {
+        rips.iter()
+            .map(|&rip| self.restore_block(rip).ok().flatten())
+            .collect()
+    }
+}
+
+/// A block restored from disk eviction
+#[derive(Debug)]
+pub struct RestoredBlock {
+    pub rip: u64,
+    pub tier: CompileTier,
+    pub guest_size: u32,
+    pub guest_instrs: u32,
+    pub guest_checksum: u64,
+    pub exec_count: u64,
+    /// Native code (if version matched)
+    pub native_code: Option<Vec<u8>>,
+    /// IR data (for recompilation if native is stale)
+    pub ir_data: Option<Vec<u8>>,
+}
+
+impl RestoredBlock {
+    /// Check if this block can be directly loaded (has valid native code)
+    pub fn can_load_directly(&self) -> bool {
+        self.native_code.is_some()
+    }
+    
+    /// Check if this block needs recompilation
+    pub fn needs_recompile(&self) -> bool {
+        self.native_code.is_none()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
