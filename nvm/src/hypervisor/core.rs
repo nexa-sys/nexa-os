@@ -1997,7 +1997,11 @@ impl VmInstance {
                 }
             }
             VmBackendType::Jit => {
-                // JIT uses stop_signal, wait for threads to finish
+                // JIT: Call shutdown() to save ReadyNow! cache before clearing
+                if let Some(engine) = self.jit_engine.read().unwrap().as_ref() {
+                    log::info!("[VM] Shutting down JIT engine (saving ReadyNow! cache)...");
+                    engine.shutdown();
+                }
             }
             VmBackendType::Auto => unreachable!("Auto backend should be resolved in VmInstance::new()"),
         }

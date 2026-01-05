@@ -455,6 +455,8 @@ pub struct JitConfig {
     pub readynow_path: Option<String>,
     /// Auto-save ReadyNow! on VM shutdown
     pub readynow_auto_save: bool,
+    /// Periodic auto-save interval in seconds (0 = disabled, default: 60)
+    pub readynow_save_interval_secs: u64,
     /// Enable aggressive inlining in S2
     pub aggressive_inlining: bool,
     /// Enable loop unrolling
@@ -481,6 +483,7 @@ impl Default for JitConfig {
             readynow_enabled: true,                     // ReadyNow! ON by default
             readynow_path,
             readynow_auto_save: true,                   // Auto-save on shutdown
+            readynow_save_interval_secs: 60,            // Periodic save every 60 seconds
             aggressive_inlining: true,
             loop_unrolling: true,
             max_inline_depth: 9,
@@ -638,6 +641,8 @@ pub struct JitEngine {
     logged_first_s1: AtomicBool,
     /// Has logged first S2 compilation for this VM?
     logged_first_s2: AtomicBool,
+    /// Last ReadyNow! save time (for periodic saves)
+    last_readynow_save: std::sync::atomic::AtomicU64,
 }
 
 impl JitEngine {
@@ -679,6 +684,7 @@ impl JitEngine {
             running: AtomicBool::new(false),
             logged_first_s1: AtomicBool::new(false),
             logged_first_s2: AtomicBool::new(false),
+            last_readynow_save: std::sync::atomic::AtomicU64::new(0),
             config,
         }
     }
@@ -690,8 +696,12 @@ impl JitEngine {
     /// 2. Falls back to interpreter if not compiled
     /// 3. Collects profile data
     /// 4. Triggers compilation when thresholds are met
+    /// 5. Periodically saves ReadyNow! cache
     pub fn execute(&self, cpu: &VirtualCpu, memory: &AddressSpace) -> JitResult<ExecuteResult> {
         self.running.store(true, Ordering::SeqCst);
+        
+        // Check for periodic ReadyNow! save
+        self.maybe_periodic_save();
         
         let rip = cpu.read_rip();
         
@@ -1095,6 +1105,52 @@ impl JitEngine {
                 self.save_readynow(PersistFormat::Ri)?;
                 self.save_readynow(PersistFormat::Native)?;
                 Ok(())
+            }
+        }
+    }
+    
+    /// Check if periodic ReadyNow! save is needed and perform it
+    /// 
+    /// This is called periodically from execute() to ensure data is saved
+    /// even if the VM crashes or is killed without proper shutdown.
+    fn maybe_periodic_save(&self) {
+        // Skip if periodic save is disabled
+        if self.config.readynow_save_interval_secs == 0 || !self.config.readynow_enabled {
+            return;
+        }
+        
+        // Get current time in seconds since UNIX epoch
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        
+        let last_save = self.last_readynow_save.load(Ordering::Relaxed);
+        
+        // Check if enough time has passed
+        if last_save == 0 {
+            // First execution, set initial time
+            self.last_readynow_save.store(now, Ordering::Relaxed);
+            return;
+        }
+        
+        if now.saturating_sub(last_save) >= self.config.readynow_save_interval_secs {
+            // Try to update atomically (avoid concurrent saves)
+            if self.last_readynow_save.compare_exchange(
+                last_save,
+                now,
+                Ordering::SeqCst,
+                Ordering::Relaxed
+            ).is_ok() {
+                // We won the race, do the save
+                log::info!("[JIT] Periodic ReadyNow! save (interval: {}s)", 
+                           self.config.readynow_save_interval_secs);
+                
+                if let Err(e) = self.save_readynow(PersistFormat::All) {
+                    log::warn!("[JIT] Periodic ReadyNow! save failed: {:?}", e);
+                } else {
+                    log::debug!("[JIT] Periodic ReadyNow! save completed");
+                }
             }
         }
     }

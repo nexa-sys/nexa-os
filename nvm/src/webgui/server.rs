@@ -282,10 +282,13 @@ impl WebGuiServer {
         log::info!("Starting NVM WebGUI server on http://{}", addr);
         log::info!("Default login: admin / admin123");
 
-        // Start server
+        // Start server with graceful shutdown support
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
 
+        log::info!("Server shutdown complete");
         Ok(())
     }
 
@@ -486,4 +489,40 @@ impl WebGuiServer {
         
         log::info!("Restored {}/{} VM registrations", restored, vms_count);
     }
+}
+
+/// Signal handler for graceful shutdown
+#[cfg(feature = "webgui")]
+async fn shutdown_signal() {
+    use tokio::signal;
+    
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            log::info!("Received Ctrl+C, shutting down gracefully...");
+        },
+        _ = terminate => {
+            log::info!("Received SIGTERM, shutting down gracefully...");
+        },
+    }
+    
+    // Shutdown all running VMs to save ReadyNow! caches
+    log::info!("Stopping all running VMs...");
+    crate::executor::vm_executor().shutdown_all();
 }

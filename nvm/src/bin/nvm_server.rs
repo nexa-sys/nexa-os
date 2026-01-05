@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "localhost", 8006);
         log::info!("API endpoint: http://{}:{}/api/v2", "localhost", 8006);
         
-        // Start the server (blocking)
+        // Start the server (blocking, handles Ctrl+C gracefully via tokio signals)
         server.start_blocking()?;
         
         Ok(())

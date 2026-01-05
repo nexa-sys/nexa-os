@@ -344,6 +344,30 @@ impl VmExecutor {
         Ok(running_vm)
     }
     
+    /// Gracefully shutdown all running VMs
+    /// 
+    /// Called during server shutdown to ensure ReadyNow! caches are saved.
+    pub fn shutdown_all(&mut self) {
+        let vm_ids: Vec<String> = self.running_vms.keys().cloned().collect();
+        
+        if vm_ids.is_empty() {
+            log::info!("[Shutdown] No running VMs to stop");
+            return;
+        }
+        
+        log::info!("[Shutdown] Stopping {} running VMs...", vm_ids.len());
+        
+        for vm_id in vm_ids {
+            if let Err(e) = self.stop_vm(&vm_id, false) {
+                log::warn!("[Shutdown] Failed to stop VM {}: {}", vm_id, e);
+            } else {
+                log::info!("[Shutdown] Stopped VM {}", vm_id);
+            }
+        }
+        
+        log::info!("[Shutdown] All VMs stopped");
+    }
+    
     /// Stop a VM (VM remains registered, can be started again)
     pub fn stop_vm(&mut self, vm_id: &str, force: bool) -> VmExecResult<()> {
         let running_vm = self.get_running_vm(vm_id)?;
