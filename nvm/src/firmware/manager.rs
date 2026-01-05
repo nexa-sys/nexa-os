@@ -288,6 +288,7 @@ impl FirmwareManager {
                     boot_order: vec![0x80, 0x00],
                     serial_enabled: true,
                     com_port: 0x3F8,
+                    cpu_count,
                 };
                 Box::new(Bios::new(config))
             }
@@ -299,6 +300,7 @@ impl FirmwareManager {
                     fb_width: 1024,
                     fb_height: 768,
                     variables: HashMap::new(),
+                    cpu_count,
                 };
                 Box::new(UefiFirmware::new(config))
             }

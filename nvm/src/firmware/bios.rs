@@ -38,6 +38,8 @@ pub struct BiosConfig {
     pub serial_enabled: bool,
     /// COM port base address
     pub com_port: u16,
+    /// Number of CPUs
+    pub cpu_count: u32,
 }
 
 impl Default for BiosConfig {
@@ -50,6 +52,7 @@ impl Default for BiosConfig {
             boot_order: vec![0x80, 0x00],  // HDD first, then floppy
             serial_enabled: true,
             com_port: 0x3F8,
+            cpu_count: 1,
         }
     }
 }
@@ -913,33 +916,37 @@ impl Bios {
     }
     
     /// Initialize ACPI tables for modern OS support
-    fn init_acpi_tables(&self, memory: &mut [u8]) {
-        // ACPI RSDP at E0000 (EBDA or ROM area)
-        let rsdp_addr = 0xE0000usize;
-        if rsdp_addr + 36 >= memory.len() {
-            return;
-        }
+    fn init_acpi_tables(&self, memory: &mut [u8], cpu_count: u32) {
+        use super::acpi::{AcpiConfig, AcpiTableGenerator};
         
-        // RSDP signature "RSD PTR "
-        let rsdp: &[u8] = &[
-            b'R', b'S', b'D', b' ', b'P', b'T', b'R', b' ', // Signature
-            0x00,  // Checksum (to be calculated)
-            b'N', b'E', b'X', b'A', b' ', b' ', // OEM ID
-            0x02,  // Revision (ACPI 2.0)
-            0x00, 0x00, 0x00, 0x00, // RSDT Address (will set below)
-            0x24, 0x00, 0x00, 0x00, // Length (36 bytes for RSDP 2.0)
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // XSDT Address
-            0x00, // Extended checksum
-            0x00, 0x00, 0x00, // Reserved
-        ];
-        memory[rsdp_addr..rsdp_addr + rsdp.len()].copy_from_slice(rsdp);
+        let acpi_config = AcpiConfig {
+            cpu_count,
+            ..Default::default()
+        };
         
-        // Calculate checksum for first 20 bytes
-        let mut sum: u8 = 0;
-        for i in 0..20 {
-            sum = sum.wrapping_add(memory[rsdp_addr + i]);
+        let generator = AcpiTableGenerator::new(acpi_config);
+        if let Err(e) = generator.generate(memory) {
+            log::warn!("Failed to generate ACPI tables: {}", e);
         }
-        memory[rsdp_addr + 8] = (256 - sum as u16) as u8;
+    }
+    
+    /// Initialize SMBIOS tables for system information
+    fn init_smbios_tables(&self, memory: &mut [u8], cpu_count: u32, memory_mb: u64) {
+        use super::smbios::{SmbiosConfig, SmbiosGenerator};
+        
+        let smbios_config = SmbiosConfig {
+            cpu_count,
+            memory_mb,
+            cpu_cores: 1,
+            cpu_threads: 1,
+            memory_slots: std::cmp::min(4, std::cmp::max(1, (memory_mb / 4096) as u8 + 1)),
+            ..Default::default()
+        };
+        
+        let generator = SmbiosGenerator::new(smbios_config);
+        if let Err(e) = generator.generate(memory) {
+            log::warn!("Failed to generate SMBIOS tables: {}", e);
+        }
     }
     
     /// Initialize MP (MultiProcessor) tables for SMP support
@@ -1019,9 +1026,16 @@ impl Firmware for Bios {
         }
         
         // =========== Phase 5: Setup ACPI tables (if space available) ===========
-        self.init_acpi_tables(memory);
+        // Calculate total memory and CPU count for ACPI/SMBIOS
+        let total_memory_mb = (self.config.memory_kb as u64 + self.config.extended_memory_kb as u64) / 1024;
+        let cpu_count = self.config.cpu_count;
         
-        // =========== Phase 6: Setup MP tables for SMP ===========
+        self.init_acpi_tables(memory, cpu_count);
+        
+        // =========== Phase 6: Setup SMBIOS tables ===========
+        self.init_smbios_tables(memory, cpu_count, total_memory_mb);
+        
+        // =========== Phase 7: Setup MP tables for SMP ===========
         self.init_mp_tables(memory);
         
         // Entry point is at FFFF:0000 (reset vector)

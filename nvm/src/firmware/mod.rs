@@ -8,38 +8,50 @@
 //!
 //! - **BIOS (Legacy)**: Traditional PC BIOS with INT services
 //! - **UEFI**: Modern firmware with GOP, runtime services
+//! - **ACPI**: Complete ACPI tables (RSDP, RSDT, XSDT, FADT, DSDT, MADT, etc.)
+//! - **SMBIOS**: System Management BIOS tables (Type 0-127)
 //! - **VGA Font**: Built-in 8x16 bitmap font for console display
 //!
 //! ## Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────┐
-//! │                     Firmware Layer                       │
-//! ├─────────────────────────────────────────────────────────┤
-//! │  ┌─────────────────┐      ┌──────────────────────────┐  │
-//! │  │   Legacy BIOS   │      │     UEFI Firmware        │  │
-//! │  │                 │      │                          │  │
-//! │  │  - POST         │      │  - System Table          │  │
-//! │  │  - IVT          │      │  - Boot Services         │  │
-//! │  │  - INT 10h/13h  │      │  - Runtime Services      │  │
-//! │  │  - Boot loader  │      │  - GOP (Graphics)        │  │
-//! │  └─────────────────┘      └──────────────────────────┘  │
-//! │  ┌────────────────────────────────────────────────────┐ │
-//! │  │                   VGA ROM Font                     │ │
-//! │  │          8x16 bitmap glyphs (256 chars)            │ │
-//! │  └────────────────────────────────────────────────────┘ │
-//! └─────────────────────────────────────────────────────────┘
+//! ┌─────────────────────────────────────────────────────────────────────┐
+//! │                        Firmware Layer                                │
+//! ├─────────────────────────────────────────────────────────────────────┤
+//! │  ┌─────────────────┐      ┌──────────────────────────┐              │
+//! │  │   Legacy BIOS   │      │     UEFI Firmware        │              │
+//! │  │                 │      │                          │              │
+//! │  │  - POST         │      │  - System Table          │              │
+//! │  │  - IVT          │      │  - Boot Services         │              │
+//! │  │  - INT 10h/13h  │      │  - Runtime Services      │              │
+//! │  │  - Boot loader  │      │  - GOP (Graphics)        │              │
+//! │  └─────────────────┘      └──────────────────────────┘              │
+//! │  ┌─────────────────────────────────────────────────────────────┐    │
+//! │  │                    System Tables                             │    │
+//! │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │    │
+//! │  │  │   ACPI   │  │  SMBIOS  │  │    MP    │  │   E820   │     │    │
+//! │  │  │  Tables  │  │  Tables  │  │  Tables  │  │ Memory   │     │    │
+//! │  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │    │
+//! │  └─────────────────────────────────────────────────────────────┘    │
+//! │  ┌─────────────────────────────────────────────────────────────┐    │
+//! │  │                   VGA ROM Font (8x16 bitmap)                 │    │
+//! │  └─────────────────────────────────────────────────────────────┘    │
+//! └─────────────────────────────────────────────────────────────────────┘
 //! ```
 
 pub mod bios;
 pub mod uefi;
 pub mod font;
 pub mod manager;
+pub mod acpi;
+pub mod smbios;
 
 pub use bios::{Bios, BiosConfig, BiosServices};
 pub use uefi::{UefiFirmware, UefiConfig, UefiBootServices, UefiRuntimeServices};
 pub use font::{VgaFont, get_vga_font, FONT_WIDTH, FONT_HEIGHT};
 pub use manager::{FirmwareManager, FirmwareBootContext, FirmwareState, BootPhase, BootMenuState, SetupKey};
+pub use acpi::{AcpiConfig, AcpiTableGenerator, Rsdp, Fadt, Facs, MadtBuilder, DsdtBuilder};
+pub use smbios::{SmbiosConfig, SmbiosGenerator, Smbios2EntryPoint, Smbios3EntryPoint};
 
 use crate::memory::PhysAddr;
 

@@ -30,6 +30,8 @@ pub struct UefiConfig {
     pub fb_height: u32,
     /// NVRAM variables
     pub variables: HashMap<String, Vec<u8>>,
+    /// Number of CPUs
+    pub cpu_count: u32,
 }
 
 impl Default for UefiConfig {
@@ -41,6 +43,7 @@ impl Default for UefiConfig {
             fb_width: 800,
             fb_height: 600,
             variables: HashMap::new(),
+            cpu_count: 1,
         }
     }
 }
@@ -589,6 +592,42 @@ impl UefiFirmware {
         
         Ok(system_table_addr)
     }
+    
+    /// Initialize ACPI tables for UEFI firmware
+    fn init_acpi_tables(&self, memory: &mut [u8]) -> FirmwareResult<()> {
+        use super::acpi::{AcpiConfig, AcpiTableGenerator};
+        
+        let acpi_config = AcpiConfig {
+            cpu_count: self.config.cpu_count,
+            ..Default::default()
+        };
+        
+        let generator = AcpiTableGenerator::new(acpi_config);
+        generator.generate(memory)
+            .map_err(|e| FirmwareError::InitializationFailed(format!("ACPI init failed: {}", e)))?;
+        Ok(())
+    }
+    
+    /// Initialize SMBIOS tables for UEFI firmware
+    fn init_smbios_tables(&self, memory: &mut [u8]) -> FirmwareResult<()> {
+        use super::smbios::{SmbiosConfig, SmbiosGenerator};
+        
+        let smbios_config = SmbiosConfig {
+            bios_vendor: String::from("NexaOS"),
+            bios_version: String::from("NexaUEFI 1.0"),
+            cpu_count: self.config.cpu_count,
+            memory_mb: self.config.memory_mb,
+            cpu_cores: 1,
+            cpu_threads: 1,
+            memory_slots: std::cmp::min(4, std::cmp::max(1, (self.config.memory_mb / 4096) as u8 + 1)),
+            ..Default::default()
+        };
+        
+        let generator = SmbiosGenerator::new(smbios_config);
+        generator.generate(memory)
+            .map_err(|e| FirmwareError::InitializationFailed(format!("SMBIOS init failed: {}", e)))?;
+        Ok(())
+    }
 }
 
 impl Firmware for UefiFirmware {
@@ -757,6 +796,12 @@ impl Firmware for UefiFirmware {
                 memory[vga_base + i * 2 + 1] = 0x1F;  // White on blue
             }
         }
+        
+        // =========== Phase 6: Initialize ACPI tables ===========
+        self.init_acpi_tables(memory)?;
+        
+        // =========== Phase 7: Initialize SMBIOS tables ===========
+        self.init_smbios_tables(memory)?;
         
         // Return entry point: CPU starts in 16-bit real mode at reset vector
         Ok(FirmwareLoadResult {
