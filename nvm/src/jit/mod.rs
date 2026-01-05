@@ -79,6 +79,191 @@ pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError};
 pub use readynow::{ReadyNowCache, NativeBlockInfo};
 
+// ============================================================================
+// JIT CPU State - Direct access structure for native code
+// ============================================================================
+
+/// JIT-accessible CPU state with known memory layout
+/// 
+/// Native JIT code accesses this structure directly via pointer arithmetic.
+/// The layout MUST be stable and `#[repr(C)]` ensures C ABI compatibility.
+///
+/// ## Memory Layout (offsets from base pointer in RDI):
+/// ```text
+/// Offset  Size  Field
+/// 0x000   8     rax
+/// 0x008   8     rcx
+/// 0x010   8     rdx
+/// 0x018   8     rbx
+/// 0x020   8     rsp
+/// 0x028   8     rbp
+/// 0x030   8     rsi
+/// 0x038   8     rdi
+/// 0x040   8     r8
+/// 0x048   8     r9
+/// 0x050   8     r10
+/// 0x058   8     r11
+/// 0x060   8     r12
+/// 0x068   8     r13
+/// 0x070   8     r14
+/// 0x078   8     r15
+/// 0x080   8     rip
+/// 0x088   8     rflags
+/// 0x090   8*    memory_base (pointer to guest physical memory)
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct JitState {
+    // General purpose registers (in x86-64 order)
+    pub rax: u64,   // 0x00
+    pub rcx: u64,   // 0x08
+    pub rdx: u64,   // 0x10
+    pub rbx: u64,   // 0x18
+    pub rsp: u64,   // 0x20
+    pub rbp: u64,   // 0x28
+    pub rsi: u64,   // 0x30
+    pub rdi: u64,   // 0x38
+    pub r8: u64,    // 0x40
+    pub r9: u64,    // 0x48
+    pub r10: u64,   // 0x50
+    pub r11: u64,   // 0x58
+    pub r12: u64,   // 0x60
+    pub r13: u64,   // 0x68
+    pub r14: u64,   // 0x70
+    pub r15: u64,   // 0x78
+    pub rip: u64,   // 0x80
+    pub rflags: u64, // 0x88
+    pub memory_base: *mut u8, // 0x90
+}
+
+impl JitState {
+    /// GPR offset for index 0-15
+    pub const fn gpr_offset(idx: u8) -> i32 {
+        (idx as i32) * 8
+    }
+    
+    pub const RIP_OFFSET: i32 = 0x80;
+    pub const RFLAGS_OFFSET: i32 = 0x88;
+    pub const MEMORY_BASE_OFFSET: i32 = 0x90;
+    
+    /// Create new JitState initialized to zero
+    pub fn new() -> Self {
+        Self {
+            rax: 0, rcx: 0, rdx: 0, rbx: 0,
+            rsp: 0, rbp: 0, rsi: 0, rdi: 0,
+            r8: 0, r9: 0, r10: 0, r11: 0,
+            r12: 0, r13: 0, r14: 0, r15: 0,
+            rip: 0, rflags: 0x2, // Bit 1 always set
+            memory_base: std::ptr::null_mut(),
+        }
+    }
+    
+    /// Copy state from VirtualCpu
+    pub fn from_vcpu(cpu: &VirtualCpu, memory: &AddressSpace) -> Self {
+        let state = cpu.state();
+        Self {
+            rax: state.regs.rax,
+            rcx: state.regs.rcx,
+            rdx: state.regs.rdx,
+            rbx: state.regs.rbx,
+            rsp: state.regs.rsp,
+            rbp: state.regs.rbp,
+            rsi: state.regs.rsi,
+            rdi: state.regs.rdi,
+            r8: state.regs.r8,
+            r9: state.regs.r9,
+            r10: state.regs.r10,
+            r11: state.regs.r11,
+            r12: state.regs.r12,
+            r13: state.regs.r13,
+            r14: state.regs.r14,
+            r15: state.regs.r15,
+            rip: state.regs.rip,
+            rflags: state.regs.rflags,
+            memory_base: memory.ram_ptr() as *mut u8,
+        }
+    }
+    
+    /// Copy state back to VirtualCpu
+    pub fn to_vcpu(&self, cpu: &VirtualCpu) {
+        cpu.write_gpr(0, self.rax);
+        cpu.write_gpr(1, self.rcx);
+        cpu.write_gpr(2, self.rdx);
+        cpu.write_gpr(3, self.rbx);
+        cpu.write_gpr(4, self.rsp);
+        cpu.write_gpr(5, self.rbp);
+        cpu.write_gpr(6, self.rsi);
+        cpu.write_gpr(7, self.rdi);
+        cpu.write_gpr(8, self.r8);
+        cpu.write_gpr(9, self.r9);
+        cpu.write_gpr(10, self.r10);
+        cpu.write_gpr(11, self.r11);
+        cpu.write_gpr(12, self.r12);
+        cpu.write_gpr(13, self.r13);
+        cpu.write_gpr(14, self.r14);
+        cpu.write_gpr(15, self.r15);
+        cpu.write_rip(self.rip);
+        cpu.write_rflags(self.rflags);
+    }
+    
+    /// Read GPR by index
+    pub fn read_gpr(&self, idx: u8) -> u64 {
+        match idx {
+            0 => self.rax,
+            1 => self.rcx,
+            2 => self.rdx,
+            3 => self.rbx,
+            4 => self.rsp,
+            5 => self.rbp,
+            6 => self.rsi,
+            7 => self.rdi,
+            8 => self.r8,
+            9 => self.r9,
+            10 => self.r10,
+            11 => self.r11,
+            12 => self.r12,
+            13 => self.r13,
+            14 => self.r14,
+            15 => self.r15,
+            _ => 0,
+        }
+    }
+    
+    /// Write GPR by index
+    pub fn write_gpr(&mut self, idx: u8, value: u64) {
+        match idx {
+            0 => self.rax = value,
+            1 => self.rcx = value,
+            2 => self.rdx = value,
+            3 => self.rbx = value,
+            4 => self.rsp = value,
+            5 => self.rbp = value,
+            6 => self.rsi = value,
+            7 => self.rdi = value,
+            8 => self.r8 = value,
+            9 => self.r9 = value,
+            10 => self.r10 = value,
+            11 => self.r11 = value,
+            12 => self.r12 = value,
+            13 => self.r13 = value,
+            14 => self.r14 = value,
+            15 => self.r15 = value,
+            _ => {}
+        }
+    }
+}
+
+impl Default for JitState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Safety: JitState is plain data, safe to send across threads
+unsafe impl Send for JitState {}
+unsafe impl Sync for JitState {}
+
+
 /// JIT execution result
 pub type JitResult<T> = Result<T, JitError>;
 
@@ -444,6 +629,7 @@ impl JitEngine {
         // Check code cache first
         if let Some(entry) = self.code_cache.lookup(rip) {
             self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+            log::debug!("[JIT] Cache hit at {:#x}, executing native", rip);
             return self.execute_native(cpu, memory, entry);
         }
         
@@ -456,26 +642,43 @@ impl JitEngine {
         // Check tier promotion
         let tier = self.determine_tier(&block, invocations);
         
+        log::debug!("[JIT] Block {:#x}: invocations={}, tier={:?}", rip, invocations, tier);
+        
         match tier {
             ExecutionTier::Interpreter => {
                 self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);
                 self.interpret(cpu, memory, rip)
             }
             ExecutionTier::S1 => {
-                // Compile with S1 if not already
-                if block.tier == ExecutionTier::Interpreter {
+                // Compile with S1 if not already in code cache
+                if self.code_cache.lookup(rip).is_none() {
+                    log::debug!("[JIT] Compiling S1 for block {:#x}", rip);
                     self.compile_s1(cpu, memory, rip, &block)?;
+                    log::debug!("[JIT] S1 compiled successfully for {:#x}", rip);
                 }
                 self.stats.s1_execs.fetch_add(1, Ordering::Relaxed);
-                self.execute_s1(cpu, memory, &block)
+                // Execute from code cache (compile_s1 stores there)
+                if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                    self.execute_native(cpu, memory, code_ptr)
+                } else {
+                    // Compilation failed, fall back to interpreter
+                    log::warn!("[JIT] S1 code not found after compile for {:#x}", rip);
+                    self.interpret(cpu, memory, rip)
+                }
             }
             ExecutionTier::S2 => {
-                // Compile with S2 if not already
-                if block.tier != ExecutionTier::S2 {
+                // Compile with S2 if not already in code cache
+                if self.code_cache.lookup(rip).is_none() {
                     self.compile_s2(cpu, memory, rip, &block)?;
                 }
                 self.stats.s2_execs.fetch_add(1, Ordering::Relaxed);
-                self.execute_s2(cpu, memory, &block)
+                // Execute from code cache
+                if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                    self.execute_native(cpu, memory, code_ptr)
+                } else {
+                    log::warn!("[JIT] S2 code not found after compile for {:#x}", rip);
+                    self.interpret(cpu, memory, rip)
+                }
             }
         }
     }
@@ -515,10 +718,14 @@ impl JitEngine {
         // Build IR using S1 compiler
         let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
         
-        // Get native code size and pointer
+        // Get native code size
         let native_len = s1_block.native.len();
-        let native_code: Box<[u8]> = s1_block.native.into_boxed_slice();
-        let host_ptr = Box::into_raw(native_code) as *const u8;
+        
+        log::debug!("[JIT] S1 compiled {:#x}: {} bytes of native code", rip, native_len);
+        
+        // Allocate executable memory and copy code
+        let host_ptr = self.code_cache.allocate_code(&s1_block.native)
+            .ok_or(JitError::CodeCacheFull)?;
         
         // Count instructions in IR
         let guest_instrs: u32 = s1_block.ir.blocks.iter()
@@ -586,36 +793,46 @@ impl JitEngine {
         Ok(())
     }
     
-    /// Execute native code from cache
+    /// Execute native code from cache using JitState
     fn execute_native(&self, cpu: &VirtualCpu, memory: &AddressSpace, code_ptr: *const u8) -> JitResult<ExecuteResult> {
-        // Safety: native code was generated by our codegen
-        // Note: Native code uses raw RAM pointer, bypassing MMIO.
-        // MMIO devices won't receive these accesses.
-        unsafe {
-            let func: extern "C" fn(*mut VirtualCpu, *mut PhysicalMemory) -> u64 = 
+        // Create JitState from VirtualCpu - this is the JIT's private copy
+        let mut jit_state = JitState::from_vcpu(cpu, memory);
+        
+        log::debug!("[JIT] Before native: JitState.rip={:#x}", jit_state.rip);
+        
+        // Safety: native code was generated by our codegen and expects JitState pointer
+        let result = unsafe {
+            // Native function signature: fn(*mut JitState) -> u64
+            let func: extern "C" fn(*mut JitState) -> u64 = 
                 std::mem::transmute(code_ptr);
             
-            let result = func(
-                cpu as *const VirtualCpu as *mut VirtualCpu,
-                memory.ram_ptr(),
-            );
-            
-            Ok(ExecuteResult::from_native(result))
-        }
+            func(&mut jit_state as *mut JitState)
+        };
+        
+        log::debug!("[JIT] After native: JitState.rip={:#x}, result={:#x}", jit_state.rip, result);
+        
+        // Copy JitState back to VirtualCpu
+        jit_state.to_vcpu(cpu);
+        
+        Ok(ExecuteResult::from_native(result))
     }
     
     fn execute_s1(&self, cpu: &VirtualCpu, memory: &AddressSpace, block: &BlockMeta) -> JitResult<ExecuteResult> {
+        log::debug!("[JIT] execute_s1: block.native_code={:?}", block.native_code);
         if let Some(code_ptr) = block.native_code {
-            // Note: Native code uses raw RAM pointer, bypassing MMIO.
-            unsafe {
-                let func: extern "C" fn(*mut VirtualCpu, *mut PhysicalMemory) -> u64 =
+            // Create JitState from VirtualCpu
+            let mut jit_state = JitState::from_vcpu(cpu, memory);
+            
+            let result = unsafe {
+                let func: extern "C" fn(*mut JitState) -> u64 =
                     std::mem::transmute(code_ptr);
-                let result = func(
-                    cpu as *const VirtualCpu as *mut VirtualCpu,
-                    memory.ram_ptr(),
-                );
-                Ok(ExecuteResult::from_native(result))
-            }
+                func(&mut jit_state as *mut JitState)
+            };
+            
+            // Copy back
+            jit_state.to_vcpu(cpu);
+            
+            Ok(ExecuteResult::from_native(result))
         } else {
             // Fall back to interpreter
             self.interpret(cpu, memory, block.guest_rip)

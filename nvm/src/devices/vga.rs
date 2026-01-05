@@ -19,7 +19,7 @@ pub const TEXT_BUFFER_SIZE: usize = TEXT_COLS * TEXT_ROWS * 2; // char + attr
 /// Default framebuffer dimensions
 pub const FB_WIDTH: usize = 800;
 pub const FB_HEIGHT: usize = 600;
-pub const FB_BPP: usize = 32;
+pub const FB_BPP: usize = 24;
 pub const FB_STRIDE: usize = FB_WIDTH * (FB_BPP / 8);
 pub const FB_SIZE: usize = FB_STRIDE * FB_HEIGHT;
 
@@ -50,7 +50,7 @@ pub struct Vga {
     /// Text mode buffer (80x25 characters with attributes)
     text_buffer: Vec<u8>,
     
-    /// Linear framebuffer (BGRA format)
+    /// Linear framebuffer (RGB format, 24bpp)
     framebuffer: Vec<u8>,
     
     /// Framebuffer dimensions
@@ -241,17 +241,16 @@ impl Vga {
                             continue;
                         }
                         
-                        let fb_idx = (py * self.fb_width + px) * 4;
+                        let fb_idx = (py * self.fb_width + px) * 3;
                         
                         // Check if pixel is set in font glyph (MSB first)
                         let pixel_set = (glyph_row >> (7 - cx)) & 1 != 0;
                         let color = if pixel_set { fg } else { bg };
                         
-                        // BGRA format
-                        fb[fb_idx] = color[2];     // B
+                        // RGB format (standard VGA)
+                        fb[fb_idx] = color[0];     // R
                         fb[fb_idx + 1] = color[1]; // G
-                        fb[fb_idx + 2] = color[0]; // R
-                        fb[fb_idx + 3] = 0xFF;     // A
+                        fb[fb_idx + 2] = color[2]; // B
                     }
                 }
             }
@@ -267,11 +266,10 @@ impl Vga {
                 for px in (cx * CHAR_WIDTH)..((cx + 1) * CHAR_WIDTH) {
                     for py in (cy * CHAR_HEIGHT + 14)..((cy + 1) * CHAR_HEIGHT) {
                         if px < self.fb_width && py < self.fb_height {
-                            let fb_idx = (py * self.fb_width + px) * 4;
-                            fb[fb_idx] = 0xFF;     // B
+                            let fb_idx = (py * self.fb_width + px) * 3;
+                            fb[fb_idx] = 0xFF;     // R
                             fb[fb_idx + 1] = 0xFF; // G
-                            fb[fb_idx + 2] = 0xFF; // R
-                            fb[fb_idx + 3] = 0xFF; // A
+                            fb[fb_idx + 2] = 0xFF; // B
                         }
                     }
                 }
@@ -931,7 +929,7 @@ impl crate::memory::MmioHandler for VgaMmioHandler {
         static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count < 20 {
-            log::info!("[VGA MMIO] Write: offset=0x{:x}, size={}, value=0x{:x}", offset, size, value);
+            log::debug!("[VGA MMIO] Write: offset=0x{:x}, size={}, value=0x{:x}", offset, size, value);
         }
         
         let mut vga = self.vga.write().unwrap();
@@ -943,6 +941,8 @@ impl crate::memory::MmioHandler for VgaMmioHandler {
                 2 => vga.write_vram_word(text_offset, value as u16),
                 _ => vga.write_vram_byte(text_offset, value as u8),
             }
+            // Render text to framebuffer after write
+            vga.render_text_to_framebuffer();
         }
     }
 }

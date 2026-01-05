@@ -320,286 +320,145 @@ impl S1Compiler {
         }
     }
     
-    /// Generate native code from IR
+    /// Generate native code from IR with proper register allocation
     fn codegen(&self, ir: &IrBlock, _profile: &ProfileDb) -> JitResult<Vec<u8>> {
         let mut code = Vec::new();
+        let mut allocator = RegAllocator::new();
         
+        // First pass: allocate registers for all VRegs in order
         for bb in &ir.blocks {
             for instr in &bb.instrs {
-                self.emit_instr(&mut code, instr)?;
+                // Allocate for destination
+                if instr.dst != VReg::NONE {
+                    allocator.allocate(instr.dst);
+                }
+                // Allocate for operands
+                for vreg in get_operands(&instr.op) {
+                    if vreg != VReg::NONE {
+                        allocator.allocate(vreg);
+                    }
+                }
             }
         }
+        
+        // Calculate stack frame size for spills
+        let spill_size = allocator.spill_size();
+        
+        // Prologue:
+        // 1. Save R15 (callee-saved) - we use it as JitState pointer
+        // 2. mov r15, rdi - save JitState pointer to R15
+        // 3. Allocate spill slots if needed
+        
+        // push r15
+        code.extend_from_slice(&[0x41, 0x57]);
+        
+        // mov r15, rdi
+        code.extend_from_slice(&[0x49, 0x89, 0xFF]);
+        
+        // sub rsp, spill_size (if needed)
+        if spill_size > 0 {
+            if spill_size <= 127 {
+                code.extend_from_slice(&[0x48, 0x83, 0xEC, spill_size as u8]);
+            } else {
+                code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+                code.extend_from_slice(&(spill_size as u32).to_le_bytes());
+            }
+        }
+        
+        // Generate code for each instruction
+        // Two-pass approach for prologue Load instructions:
+        // Pass 1: Process spill-target Loads first (safe to use RAX as temp since no registers hold values yet)
+        // Pass 2: Process register-target Loads (direct load to target register)
+        // Pass 3: Process all other instructions
+        for bb in &ir.blocks {
+            // Pass 1: Spill-target Load instructions
+            for instr in &bb.instrs {
+                if self.is_load_instr(&instr.op) && allocator.get(instr.dst).is_spill() {
+                    self.emit_instr_with_alloc(&mut code, instr, &allocator, spill_size)?;
+                }
+            }
+            // Pass 2: Register-target Load instructions  
+            for instr in &bb.instrs {
+                if self.is_load_instr(&instr.op) && !allocator.get(instr.dst).is_spill() {
+                    self.emit_instr_with_alloc(&mut code, instr, &allocator, spill_size)?;
+                }
+            }
+            // Pass 3: All other instructions
+            for instr in &bb.instrs {
+                if !self.is_load_instr(&instr.op) {
+                    self.emit_instr_with_alloc(&mut code, instr, &allocator, spill_size)?;
+                }
+            }
+        }
+        
+        // Epilogue: restore spill space and R15, then return 0
+        if spill_size > 0 {
+            if spill_size <= 127 {
+                code.extend_from_slice(&[0x48, 0x83, 0xC4, spill_size as u8]);
+            } else {
+                code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+                code.extend_from_slice(&(spill_size as u32).to_le_bytes());
+            }
+        }
+        
+        // pop r15
+        code.extend_from_slice(&[0x41, 0x5F]);
+        
+        // mov eax, 0; ret
+        code.extend_from_slice(&[0xB8, 0x00, 0x00, 0x00, 0x00, 0xC3]);
         
         Ok(code)
     }
     
-    fn emit_instr(&self, code: &mut Vec<u8>, instr: &IrInstr) -> JitResult<()> {
+    /// Check if an IR op is a Load instruction (LoadGpr, LoadRip, LoadFlags)
+    fn is_load_instr(&self, op: &IrOp) -> bool {
+        matches!(op, IrOp::LoadGpr(_) | IrOp::LoadRip | IrOp::LoadFlags)
+    }
+    
+    /// Emit instruction using register allocation
+    fn emit_instr_with_alloc(&self, code: &mut Vec<u8>, instr: &IrInstr, alloc: &RegAllocator, spill_size: i32) -> JitResult<()> {
         let dst = instr.dst;
         
         match &instr.op {
             IrOp::Const(val) => {
-                // mov r64, imm64
-                let reg = vreg_to_host(dst);
-                code.push(0x48 | ((reg >> 3) << 2)); // REX.W + REX.B if needed
-                code.push(0xB8 + (reg & 7));
-                code.extend_from_slice(&(*val as u64).to_le_bytes());
+                // mov dst, imm64
+                self.emit_mov_imm64(code, alloc.get(dst), *val as u64)?;
             }
             
             IrOp::LoadGpr(idx) => {
-                // Load from guest state
-                let reg = vreg_to_host(dst);
-                let _ = (reg, idx); // Placeholder
-                code.push(0x90); // NOP
+                // Load guest GPR from JitState: dst <- [r15 + idx*8]
+                let offset = (*idx as i32) * 8;
+                self.emit_load_jitstate(code, alloc.get(dst), offset)?;
             }
             
-            IrOp::Add(a, b) => {
-                // SSA: dst = a + b
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                
-                // If dst != a, mov dst, a first
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                // add dst, b
-                emit_alu_reg_reg(code, 0x01, dreg, breg);
+            IrOp::StoreGpr(idx, val) => {
+                // Store to guest GPR in JitState: [r15 + idx*8] <- val
+                let offset = (*idx as i32) * 8;
+                self.emit_store_jitstate(code, offset, alloc.get(*val))?;
             }
             
-            IrOp::Sub(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                emit_alu_reg_reg(code, 0x29, dreg, breg);
+            IrOp::LoadRip => {
+                // Load guest RIP from JitState
+                self.emit_load_jitstate(code, alloc.get(dst), 0x80)?;
             }
             
-            IrOp::And(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                emit_alu_reg_reg(code, 0x21, dreg, breg);
+            IrOp::StoreRip(val) => {
+                // Store to guest RIP in JitState
+                self.emit_store_jitstate(code, 0x80, alloc.get(*val))?;
             }
             
-            IrOp::Or(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                emit_alu_reg_reg(code, 0x09, dreg, breg);
+            IrOp::LoadFlags => {
+                // Load guest RFLAGS from JitState
+                self.emit_load_jitstate(code, alloc.get(dst), 0x88)?;
             }
             
-            IrOp::Xor(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                emit_alu_reg_reg(code, 0x31, dreg, breg);
-            }
-            
-            IrOp::Mul(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                
-                // imul r64, r64
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                emit_rex_w(code, dreg, breg);
-                code.extend_from_slice(&[0x0F, 0xAF]);
-                code.push(0xC0 | ((dreg & 7) << 3) | (breg & 7));
-            }
-            
-            IrOp::Shl(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                
-                // Move shift amount to CL if not constant
-                if let Some(shift) = get_const_val(*b) {
-                    // shl r64, imm8
-                    emit_rex_w(code, dreg, 0);
-                    code.push(0xC1);
-                    code.push(0xE0 | (dreg & 7));
-                    code.push(shift as u8 & 63);
-                } else {
-                    let breg = vreg_to_host(*b);
-                    emit_mov_reg_reg(code, 1, breg); // mov rcx, b
-                    emit_rex_w(code, dreg, 0);
-                    code.push(0xD3);
-                    code.push(0xE0 | (dreg & 7));
-                }
-            }
-            
-            IrOp::Shr(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                
-                if let Some(shift) = get_const_val(*b) {
-                    emit_rex_w(code, dreg, 0);
-                    code.push(0xC1);
-                    code.push(0xE8 | (dreg & 7));
-                    code.push(shift as u8 & 63);
-                } else {
-                    let breg = vreg_to_host(*b);
-                    emit_mov_reg_reg(code, 1, breg);
-                    emit_rex_w(code, dreg, 0);
-                    code.push(0xD3);
-                    code.push(0xE8 | (dreg & 7));
-                }
-            }
-            
-            IrOp::Sar(a, b) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
-                
-                if dreg != areg {
-                    emit_mov_reg_reg(code, dreg, areg);
-                }
-                
-                if let Some(shift) = get_const_val(*b) {
-                    emit_rex_w(code, dreg, 0);
-                    code.push(0xC1);
-                    code.push(0xF8 | (dreg & 7)); // SAR /7
-                    code.push(shift as u8 & 63);
-                } else {
-                    let breg = vreg_to_host(*b);
-                    emit_mov_reg_reg(code, 1, breg);
-                    emit_rex_w(code, dreg, 0);
-                    code.push(0xD3);
-                    code.push(0xF8 | (dreg & 7));
-                }
-            }
-            
-            IrOp::Load8(addr) | IrOp::Load16(addr) | 
-            IrOp::Load32(addr) | IrOp::Load64(addr) => {
-                // SSA: dst = mem[addr]
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*addr);
-                
-                match &instr.op {
-                    IrOp::Load8(_) => {
-                        // movzx r64, byte [addr]
-                        emit_rex_w(code, dreg, areg);
-                        code.extend_from_slice(&[0x0F, 0xB6]);
-                        code.push((dreg & 7) << 3 | (areg & 7));
-                    }
-                    IrOp::Load64(_) => {
-                        // mov r64, [addr]
-                        emit_rex_w(code, dreg, areg);
-                        code.push(0x8B);
-                        code.push((dreg & 7) << 3 | (areg & 7));
-                    }
-                    _ => {
-                        // Similar patterns for 16/32 bit
-                        emit_rex_w(code, dreg, areg);
-                        code.push(0x8B);
-                        code.push((dreg & 7) << 3 | (areg & 7));
-                    }
-                }
-            }
-            
-            IrOp::Store8(addr, val) | IrOp::Store16(addr, val) |
-            IrOp::Store32(addr, val) | IrOp::Store64(addr, val) => {
-                let areg = vreg_to_host(*addr);
-                let vreg = vreg_to_host(*val);
-                
-                // mov [addr], r
-                emit_rex_w(code, vreg, areg);
-                code.push(0x89);
-                code.push((vreg & 7) << 3 | (areg & 7));
-            }
-            
-            IrOp::Cmp(a, b) => {
-                // SSA: dst = flags(a cmp b)
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                let dreg = vreg_to_host(dst);
-                
-                // cmp a, b
-                emit_alu_reg_reg(code, 0x39, areg, breg);
-                
-                // lahf to capture flags
-                code.push(0x9F);
-                // mov dst, rax (flags in AH)
-                emit_mov_reg_reg(code, dreg, 0);
-            }
-            
-            IrOp::Test(a, b) => {
-                let areg = vreg_to_host(*a);
-                let breg = vreg_to_host(*b);
-                let dreg = vreg_to_host(dst);
-                
-                // test a, b
-                emit_alu_reg_reg(code, 0x85, areg, breg);
-                
-                code.push(0x9F); // lahf
-                emit_mov_reg_reg(code, dreg, 0);
-            }
-            
-            IrOp::Call(target) => {
-                // Direct call to address
-                // call rel32 - would need address resolution
-                let _ = target;
-                code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00]); // Placeholder
-            }
-            
-            IrOp::CallIndirect(target) => {
-                // call helper function
-                let treg = vreg_to_host(*target);
-                emit_rex_w(code, 0, treg);
-                code.push(0xFF);
-                code.push(0xD0 | (treg & 7));
-            }
-            
-            IrOp::Jump(block_id) => {
-                // jmp rel32 - would need label resolution
-                let _ = block_id;
-                code.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]); // Placeholder
-            }
-            
-            IrOp::Branch(cond, true_blk, false_blk) => {
-                // Test condition and branch
-                let creg = vreg_to_host(*cond);
-                let _ = (true_blk, false_blk);
-                
-                // test cond, cond
-                emit_alu_reg_reg(code, 0x85, creg, creg);
-                
-                // jnz to true_blk (placeholder - would need label resolution)
-                code.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]); // jnz rel32
-                // jmp to false_blk
-                code.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]); // jmp rel32
-            }
-            
-            IrOp::Ret => {
-                code.push(0xC3);
+            IrOp::StoreFlags(val) => {
+                // Store to guest RFLAGS in JitState
+                self.emit_store_jitstate(code, 0x88, alloc.get(*val))?;
             }
             
             IrOp::Exit(reason) => {
-                // Exit VM - return to runtime with exit code
-                // mov eax, exit_code
+                // Exit: restore stack, pop r15, mov eax, code; ret
                 let exit_code = match reason {
                     ExitReason::Normal => 0u32,
                     ExitReason::Halt => 1,
@@ -611,18 +470,247 @@ impl S1Compiler {
                     ExitReason::Hypercall => 0x600,
                     ExitReason::Reset => 0x700,
                 };
-                code.push(0xB8);
-                code.extend_from_slice(&exit_code.to_le_bytes());
-                code.push(0xC3);
+                
+                // Full epilogue: add rsp, spill_size; pop r15; mov eax, code; ret
+                self.emit_epilogue(code, spill_size, exit_code);
+            }
+            
+            IrOp::Hlt => {
+                // Same as Exit(Halt)
+                self.emit_epilogue(code, spill_size, 1);
+            }
+            
+            IrOp::Syscall => {
+                self.emit_epilogue(code, spill_size, 0x600);
             }
             
             IrOp::Nop => {
                 code.push(0x90);
             }
             
+            // For other ops, use legacy emit_instr temporarily
+            _ => {
+                self.emit_instr_legacy(code, instr, alloc)?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Emit full epilogue: add rsp, spill_size; load rip from JitState; encode result; pop r15; ret
+    /// 
+    /// Result encoding (64-bit):
+    /// - Bits 63-56: exit kind (0=Continue, 1=Halt, 2=Interrupt, etc.)
+    /// - Bits 55-0:  kind-specific value (e.g., next_rip for Continue)
+    ///
+    /// Native code reads JitState.rip at runtime and encodes it into the return value,
+    /// so the hypervisor gets the correct next_rip after to_vcpu() has already set it.
+    fn emit_epilogue(&self, code: &mut Vec<u8>, spill_size: i32, exit_kind: u32) {
+        // add rsp, spill_size (if needed)
+        if spill_size > 0 {
+            if spill_size <= 127 {
+                code.extend_from_slice(&[0x48, 0x83, 0xC4, spill_size as u8]);
+            } else {
+                code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+                code.extend_from_slice(&(spill_size as u32).to_le_bytes());
+            }
+        }
+        
+        // Load JitState.rip into rax (r15 points to JitState, rip is at offset 0x80)
+        // mov rax, [r15 + 0x80]
+        // REX.W=1, REX.B=1 (for r15): 0x49
+        // opcode: 0x8B (mov r64, r/m64)
+        // ModRM: mod=10 (disp32), reg=000 (rax), r/m=111 (r15) = 0x87
+        // disp32: 0x80, 0x00, 0x00, 0x00
+        code.extend_from_slice(&[0x49, 0x8B, 0x87, 0x80, 0x00, 0x00, 0x00]);
+        
+        // If exit_kind != 0, OR the kind into high byte of rax
+        // mov r11, (exit_kind << 56); or rax, r11
+        if exit_kind != 0 {
+            let kind_shifted = (exit_kind as u64) << 56;
+            // mov r11, imm64: REX.W=1, REX.B=1 = 0x49, opcode = 0xBB
+            code.extend_from_slice(&[0x49, 0xBB]);
+            code.extend_from_slice(&kind_shifted.to_le_bytes());
+            // or rax, r11: REX.W=1, REX.R=1 = 0x4C, opcode = 0x09, ModRM = 0xD8
+            code.extend_from_slice(&[0x4C, 0x09, 0xD8]);
+        }
+        
+        // pop r15
+        code.extend_from_slice(&[0x41, 0x5F]);
+        
+        // ret
+        code.push(0xC3);
+    }
+    
+    /// Emit mov dst, imm64
+    fn emit_mov_imm64(&self, code: &mut Vec<u8>, dst: RegAlloc, val: u64) -> JitResult<()> {
+        match dst {
+            RegAlloc::Reg(reg) => {
+                // mov r64, imm64
+                code.push(0x48 | if reg >= 8 { 0x01 } else { 0 });
+                code.push(0xB8 + (reg & 7));
+                code.extend_from_slice(&val.to_le_bytes());
+            }
+            RegAlloc::Spill(offset) => {
+                // mov r11, imm64; mov [rsp + offset], r11
+                // Use R11 as scratch to avoid clobbering allocated registers
+                code.extend_from_slice(&[0x49, 0xBB]); // mov r11, imm64 (REX.W + REX.B + mov r64)
+                code.extend_from_slice(&val.to_le_bytes());
+                self.emit_store_stack(code, offset, SCRATCH_REG)?;
+            }
+        }
+        Ok(())
+    }
+    
+    /// Emit load from JitState: dst <- [r15 + offset]
+    fn emit_load_jitstate(&self, code: &mut Vec<u8>, dst: RegAlloc, offset: i32) -> JitResult<()> {
+        match dst {
+            RegAlloc::Reg(reg) => {
+                emit_load_from_jitstate(code, reg, offset);
+            }
+            RegAlloc::Spill(spill_off) => {
+                // Load to R11 first, then store to spill slot
+                // Use R11 as scratch to avoid clobbering allocated registers
+                emit_load_from_jitstate(code, SCRATCH_REG, offset);
+                self.emit_store_stack(code, spill_off, SCRATCH_REG)?;
+            }
+        }
+        Ok(())
+    }
+    
+    /// Emit store to JitState: [r15 + offset] <- src
+    fn emit_store_jitstate(&self, code: &mut Vec<u8>, offset: i32, src: RegAlloc) -> JitResult<()> {
+        match src {
+            RegAlloc::Reg(reg) => {
+                emit_store_to_jitstate(code, offset, reg);
+            }
+            RegAlloc::Spill(spill_off) => {
+                // Load from spill slot to R11 first
+                // Use R11 as scratch to avoid clobbering allocated registers
+                self.emit_load_stack(code, SCRATCH_REG, spill_off)?;
+                emit_store_to_jitstate(code, offset, SCRATCH_REG);
+            }
+        }
+        Ok(())
+    }
+    
+    /// Emit load from stack: dst <- [rsp + offset]
+    fn emit_load_stack(&self, code: &mut Vec<u8>, dst_reg: u8, offset: i32) -> JitResult<()> {
+        let rex = 0x48 | if dst_reg >= 8 { 0x04 } else { 0 };
+        code.push(rex);
+        code.push(0x8B); // mov r64, r/m64
+        
+        if offset >= -128 && offset <= 127 {
+            // [RSP + disp8] needs SIB byte
+            code.push(0x44 | ((dst_reg & 7) << 3)); // mod=01, reg, r/m=100 (SIB)
+            code.push(0x24); // SIB: scale=0, index=RSP, base=RSP
+            code.push(offset as u8);
+        } else {
+            code.push(0x84 | ((dst_reg & 7) << 3)); // mod=10, reg, r/m=100 (SIB)
+            code.push(0x24); // SIB
+            code.extend_from_slice(&offset.to_le_bytes());
+        }
+        Ok(())
+    }
+    
+    /// Emit store to stack: [rsp + offset] <- src
+    fn emit_store_stack(&self, code: &mut Vec<u8>, offset: i32, src_reg: u8) -> JitResult<()> {
+        let rex = 0x48 | if src_reg >= 8 { 0x04 } else { 0 };
+        code.push(rex);
+        code.push(0x89); // mov r/m64, r64
+        
+        if offset >= -128 && offset <= 127 {
+            code.push(0x44 | ((src_reg & 7) << 3));
+            code.push(0x24);
+            code.push(offset as u8);
+        } else {
+            code.push(0x84 | ((src_reg & 7) << 3));
+            code.push(0x24);
+            code.extend_from_slice(&offset.to_le_bytes());
+        }
+        Ok(())
+    }
+    
+    /// Legacy emit_instr for ops not yet converted (uses vreg_to_host)
+    fn emit_instr_legacy(&self, code: &mut Vec<u8>, instr: &IrInstr, alloc: &RegAllocator) -> JitResult<()> {
+        let dst = instr.dst;
+        
+        // Helper to get reg from allocation (RAX as fallback for spilled)
+        let get_reg = |v: VReg| -> u8 {
+            match alloc.get(v) {
+                RegAlloc::Reg(r) => r,
+                RegAlloc::Spill(_) => 0, // Use RAX as temp
+            }
+        };
+        
+        match &instr.op {
+            IrOp::Add(a, b) => {
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
+                let breg = get_reg(*b);
+                
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_alu_reg_reg(code, 0x01, dreg, breg); // add
+            }
+            
+            IrOp::Sub(a, b) => {
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
+                let breg = get_reg(*b);
+                
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_alu_reg_reg(code, 0x29, dreg, breg); // sub
+            }
+            
+            IrOp::And(a, b) => {
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
+                let breg = get_reg(*b);
+                
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_alu_reg_reg(code, 0x21, dreg, breg); // and
+            }
+            
+            IrOp::Or(a, b) => {
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
+                let breg = get_reg(*b);
+                
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_alu_reg_reg(code, 0x09, dreg, breg); // or
+            }
+            
+            IrOp::Xor(a, b) => {
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
+                let breg = get_reg(*b);
+                
+                if dreg != areg {
+                    emit_mov_reg_reg(code, dreg, areg);
+                }
+                emit_alu_reg_reg(code, 0x31, dreg, breg); // xor
+            }
+            
+            IrOp::Ret => {
+                code.push(0xC3);
+            }
+            
+            IrOp::Jump(_) => {
+                // Placeholder - would need label resolution
+                code.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]);
+            }
+            
             IrOp::Neg(a) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
                 if dreg != areg {
                     emit_mov_reg_reg(code, dreg, areg);
                 }
@@ -632,8 +720,8 @@ impl S1Compiler {
             }
             
             IrOp::Not(a) => {
-                let dreg = vreg_to_host(dst);
-                let areg = vreg_to_host(*a);
+                let dreg = get_reg(dst);
+                let areg = get_reg(*a);
                 if dreg != areg {
                     emit_mov_reg_reg(code, dreg, areg);
                 }
@@ -694,11 +782,97 @@ fn is_block_terminator(instr: &DecodedInstr) -> bool {
     )
 }
 
-/// Map virtual register to host register
-fn vreg_to_host(vreg: VReg) -> u8 {
-    // Simple mapping: vreg.0 mod 16
-    // In real impl, would use register allocator
-    (vreg.0 as u8) % 16
+// ============================================================================
+// Linear Scan Register Allocator
+// ============================================================================
+
+/// Available host registers for allocation (excluding RSP=4 and R15=15)
+// Allocatable registers: excludes RSP(4), R11(11, scratch), R15(15, JitState ptr)
+const ALLOCATABLE_REGS: [u8; 13] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 14];
+// R11 is reserved as scratch register for spill operations
+const SCRATCH_REG: u8 = 11;
+
+/// Register allocation result for a VReg
+#[derive(Debug, Clone, Copy)]
+enum RegAlloc {
+    /// Allocated to a host register
+    Reg(u8),
+    /// Spilled to stack at [RSP + offset]
+    Spill(i32),
+}
+
+impl RegAlloc {
+    fn is_spill(&self) -> bool {
+        matches!(self, RegAlloc::Spill(_))
+    }
+}
+
+/// Simple linear scan register allocator
+struct RegAllocator {
+    /// VReg -> allocation mapping
+    allocations: std::collections::HashMap<u32, RegAlloc>,
+    /// Which host registers are currently in use (vreg that owns it)
+    reg_owners: [Option<u32>; 16],
+    /// Next spill slot offset (grows downward from RSP)
+    next_spill: i32,
+    /// Total spill slots used
+    spill_count: i32,
+}
+
+impl RegAllocator {
+    fn new() -> Self {
+        Self {
+            allocations: std::collections::HashMap::new(),
+            reg_owners: [None; 16],
+            next_spill: 0, // Start at [RSP+0], grow upward
+            spill_count: 0,
+        }
+    }
+    
+    /// Allocate a register for a VReg
+    fn allocate(&mut self, vreg: VReg) -> RegAlloc {
+        // Already allocated?
+        if let Some(&alloc) = self.allocations.get(&vreg.0) {
+            return alloc;
+        }
+        
+        // Try to find a free register
+        for &reg in &ALLOCATABLE_REGS {
+            if self.reg_owners[reg as usize].is_none() {
+                self.reg_owners[reg as usize] = Some(vreg.0);
+                let alloc = RegAlloc::Reg(reg);
+                self.allocations.insert(vreg.0, alloc);
+                return alloc;
+            }
+        }
+        
+        // No free register, spill to stack
+        // Offsets: 0, 8, 16... relative to RSP after stack frame allocation
+        let offset = self.next_spill;
+        self.next_spill += 8;
+        self.spill_count += 1;
+        let alloc = RegAlloc::Spill(offset);
+        self.allocations.insert(vreg.0, alloc);
+        alloc
+    }
+    
+    /// Get allocation for a VReg (must already be allocated)
+    fn get(&self, vreg: VReg) -> RegAlloc {
+        *self.allocations.get(&vreg.0).unwrap_or(&RegAlloc::Spill(0))
+    }
+    
+    /// Release a VReg's register (for dead VRegs)
+    fn release(&mut self, vreg: VReg) {
+        if let Some(RegAlloc::Reg(reg)) = self.allocations.get(&vreg.0) {
+            self.reg_owners[*reg as usize] = None;
+        }
+        self.allocations.remove(&vreg.0);
+    }
+    
+    /// Get total stack space needed for spills
+    fn spill_size(&self) -> i32 {
+        self.spill_count * 8
+    }
 }
 
 /// Get constant value if vreg is a constant
@@ -808,6 +982,50 @@ fn emit_alu_reg_reg(code: &mut Vec<u8>, opcode: u8, dst: u8, src: u8) {
     emit_rex_w(code, src, dst);
     code.push(opcode);
     code.push(0xC0 | ((src & 7) << 3) | (dst & 7));
+}
+
+/// Emit: mov reg, [r15 + offset]
+/// Load a 64-bit value from JitState (R15 is the JitState pointer, saved in prologue)
+fn emit_load_from_jitstate(code: &mut Vec<u8>, reg: u8, offset: i32) {
+    // REX.W prefix: 0x48 base
+    // REX.R if reg >= 8
+    // REX.B for R15 base register
+    let rex = 0x49 | if reg >= 8 { 0x04 } else { 0 }; // 0x49 = REX.WB
+    code.push(rex);
+    
+    // MOV r64, r/m64: 0x8B
+    code.push(0x8B);
+    
+    // ModR/M: mod=01/10 (disp8/disp32), reg=target, r/m=7 (R15 with REX.B)
+    if offset >= -128 && offset <= 127 {
+        // mod=01: [R15 + disp8]
+        code.push(0x47 | ((reg & 7) << 3));  // 01 reg 111
+        code.push(offset as u8);
+    } else {
+        // mod=10: [R15 + disp32]
+        code.push(0x87 | ((reg & 7) << 3));  // 10 reg 111
+        code.extend_from_slice(&offset.to_le_bytes());
+    }
+}
+
+/// Emit: mov [r15 + offset], reg
+/// Store a 64-bit value to JitState
+fn emit_store_to_jitstate(code: &mut Vec<u8>, offset: i32, reg: u8) {
+    // REX.W prefix with REX.B for R15
+    let rex = 0x49 | if reg >= 8 { 0x04 } else { 0 }; // 0x49 = REX.WB
+    code.push(rex);
+    
+    // MOV r/m64, r64: 0x89
+    code.push(0x89);
+    
+    // ModR/M: mod=01/10, reg=source, r/m=7 (R15 with REX.B)
+    if offset >= -128 && offset <= 127 {
+        code.push(0x47 | ((reg & 7) << 3));
+        code.push(offset as u8);
+    } else {
+        code.push(0x87 | ((reg & 7) << 3));
+        code.extend_from_slice(&offset.to_le_bytes());
+    }
 }
 
 #[cfg(test)]

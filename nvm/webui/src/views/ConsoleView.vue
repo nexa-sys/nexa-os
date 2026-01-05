@@ -14,13 +14,15 @@ const error = ref<string | null>(null)
 const consoleMessages = ref<string[]>([])
 const keyboardCaptured = ref(false)
 
-// Console display
+// Console display (WebGL for RGB texture)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const consoleContainerRef = ref<HTMLDivElement | null>(null)
 let ws: WebSocket | null = null
 let reconnectAttempts = 0
 const maxReconnectAttempts = 3
-let canvasCtx: CanvasRenderingContext2D | null = null
+let gl: WebGLRenderingContext | null = null
+let glProgram: WebGLProgram | null = null
+let glTexture: WebGLTexture | null = null
 let displayWidth = 800
 let displayHeight = 600
 
@@ -54,27 +56,95 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
+// WebGL shaders for RGB texture rendering
+const vertexShaderSource = `
+  attribute vec2 a_position;
+  attribute vec2 a_texCoord;
+  varying vec2 v_texCoord;
+  void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_texCoord = a_texCoord;
+  }
+`
+
+const fragmentShaderSource = `
+  precision mediump float;
+  uniform sampler2D u_texture;
+  varying vec2 v_texCoord;
+  void main() {
+    gl_FragColor = texture2D(u_texture, v_texCoord);
+  }
+`
+
 function initCanvas(width: number, height: number) {
   displayWidth = width
   displayHeight = height
   
   nextTick(() => {
-    if (canvasRef.value) {
-      canvasRef.value.width = width
-      canvasRef.value.height = height
-      canvasCtx = canvasRef.value.getContext('2d')
-      
-      // Fill with black initially
-      if (canvasCtx) {
-        canvasCtx.fillStyle = '#000000'
-        canvasCtx.fillRect(0, 0, width, height)
-      }
+    if (!canvasRef.value) return
+    
+    canvasRef.value.width = width
+    canvasRef.value.height = height
+    
+    // Initialize WebGL
+    gl = canvasRef.value.getContext('webgl')
+    if (!gl) {
+      console.error('WebGL not supported')
+      return
     }
+    
+    // Create shaders
+    const vertexShader = gl.createShader(gl.VERTEX_SHADER)!
+    gl.shaderSource(vertexShader, vertexShaderSource)
+    gl.compileShader(vertexShader)
+    
+    const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER)!
+    gl.shaderSource(fragmentShader, fragmentShaderSource)
+    gl.compileShader(fragmentShader)
+    
+    // Create program
+    glProgram = gl.createProgram()!
+    gl.attachShader(glProgram, vertexShader)
+    gl.attachShader(glProgram, fragmentShader)
+    gl.linkProgram(glProgram)
+    gl.useProgram(glProgram)
+    
+    // Set up geometry (full-screen quad)
+    const positions = new Float32Array([
+      -1, -1,  0, 1,
+       1, -1,  1, 1,
+      -1,  1,  0, 0,
+       1,  1,  1, 0,
+    ])
+    
+    const buffer = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW)
+    
+    const posLoc = gl.getAttribLocation(glProgram, 'a_position')
+    const texLoc = gl.getAttribLocation(glProgram, 'a_texCoord')
+    
+    gl.enableVertexAttribArray(posLoc)
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0)
+    gl.enableVertexAttribArray(texLoc)
+    gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 16, 8)
+    
+    // Create texture
+    glTexture = gl.createTexture()
+    gl.bindTexture(gl.TEXTURE_2D, glTexture)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    
+    // Clear to black
+    gl.clearColor(0, 0, 0, 1)
+    gl.clear(gl.COLOR_BUFFER_BIT)
   })
 }
 
 function renderFramebuffer(data: ArrayBuffer) {
-  if (!canvasCtx || !canvasRef.value) return
+  if (!gl || !glTexture || !canvasRef.value) return
   
   const view = new DataView(data)
   
@@ -94,12 +164,16 @@ function renderFramebuffer(data: ArrayBuffer) {
     return // Canvas will be ready on next frame
   }
   
-  // Get pixel data (RGBA format, 4 bytes per pixel)
-  const pixelData = new Uint8ClampedArray(data, 8)
+  // Get RGB pixel data (3 bytes per pixel)
+  const rgbData = new Uint8Array(data, 8)
   
-  // Create ImageData and draw to canvas
-  const imageData = new ImageData(pixelData, width, height)
-  canvasCtx.putImageData(imageData, 0, 0)
+  // Upload RGB texture to WebGL
+  gl.bindTexture(gl.TEXTURE_2D, glTexture)
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, width, height, 0, gl.RGB, gl.UNSIGNED_BYTE, rgbData)
+  
+  // Draw
+  gl.viewport(0, 0, width, height)
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
 }
 
 function connectWebSocket() {

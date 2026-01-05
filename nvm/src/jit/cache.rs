@@ -5,10 +5,14 @@
 //! - Invalidation on self-modifying code
 //! - Fast lookup by guest RIP
 //! - Tier promotion tracking
+//! - Executable memory allocation via mmap
 
 use std::collections::{HashMap, BTreeMap};
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::sync::RwLock;
+
+/// Default size for executable memory pool (16 MB)
+const DEFAULT_EXEC_POOL_SIZE: usize = 16 * 1024 * 1024;
 
 /// Compilation tier
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -87,6 +91,9 @@ pub struct CodeCache {
     
     /// Statistics
     stats: CacheStats,
+    
+    /// Executable memory pool
+    exec_pool: ExecutablePool,
 }
 
 /// Cache statistics
@@ -123,7 +130,13 @@ impl CodeCache {
             max_size,
             epoch: AtomicU64::new(0),
             stats: CacheStats::default(),
+            exec_pool: ExecutablePool::new(DEFAULT_EXEC_POOL_SIZE),
         }
+    }
+    
+    /// Allocate executable memory and copy code into it
+    pub fn allocate_code(&self, code: &[u8]) -> Option<*const u8> {
+        self.exec_pool.allocate(code)
     }
     
     /// Look up a compiled block by guest RIP
@@ -494,6 +507,129 @@ pub fn compute_checksum(code: &[u8]) -> u64 {
     }
     hash
 }
+
+/// Executable memory pool using mmap
+/// 
+/// Allocates memory with read-write-execute permissions for JIT code.
+pub struct ExecutablePool {
+    /// Base address of the pool
+    base: *mut u8,
+    /// Total pool size
+    size: usize,
+    /// Current allocation offset
+    offset: AtomicU32,
+}
+
+impl ExecutablePool {
+    /// Create a new executable memory pool
+    pub fn new(size: usize) -> Self {
+        let base = unsafe {
+            #[cfg(unix)]
+            {
+                use std::ptr;
+                let addr = libc::mmap(
+                    ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                );
+                if addr == libc::MAP_FAILED {
+                    panic!("Failed to allocate executable memory");
+                }
+                addr as *mut u8
+            }
+            #[cfg(windows)]
+            {
+                use std::ptr;
+                use winapi::um::memoryapi::VirtualAlloc;
+                use winapi::um::winnt::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE};
+                let addr = VirtualAlloc(
+                    ptr::null_mut(),
+                    size,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_EXECUTE_READWRITE,
+                );
+                if addr.is_null() {
+                    panic!("Failed to allocate executable memory");
+                }
+                addr as *mut u8
+            }
+        };
+        
+        Self {
+            base,
+            size,
+            offset: AtomicU32::new(0),
+        }
+    }
+    
+    /// Allocate space for code and copy it
+    /// Returns pointer to executable code
+    pub fn allocate(&self, code: &[u8]) -> Option<*const u8> {
+        let aligned_size = (code.len() + 15) & !15; // 16-byte align
+        
+        loop {
+            let current = self.offset.load(Ordering::Relaxed);
+            let new_offset = current + aligned_size as u32;
+            
+            if new_offset as usize > self.size {
+                return None; // Out of memory
+            }
+            
+            if self.offset.compare_exchange(
+                current,
+                new_offset,
+                Ordering::SeqCst,
+                Ordering::Relaxed
+            ).is_ok() {
+                let ptr = unsafe { self.base.add(current as usize) };
+                // Copy code to executable memory
+                unsafe {
+                    std::ptr::copy_nonoverlapping(code.as_ptr(), ptr, code.len());
+                }
+                return Some(ptr as *const u8);
+            }
+        }
+    }
+    
+    /// Reset the pool (invalidates all code!)
+    pub fn reset(&self) {
+        self.offset.store(0, Ordering::Relaxed);
+    }
+    
+    /// Get used space
+    pub fn used(&self) -> usize {
+        self.offset.load(Ordering::Relaxed) as usize
+    }
+    
+    /// Get available space
+    pub fn available(&self) -> usize {
+        self.size - self.used()
+    }
+}
+
+impl Drop for ExecutablePool {
+    fn drop(&mut self) {
+        unsafe {
+            #[cfg(unix)]
+            {
+                libc::munmap(self.base as *mut libc::c_void, self.size);
+            }
+            #[cfg(windows)]
+            {
+                use winapi::um::memoryapi::VirtualFree;
+                use winapi::um::winnt::MEM_RELEASE;
+                VirtualFree(self.base as *mut _, 0, MEM_RELEASE);
+            }
+        }
+    }
+}
+
+// Safety: ExecutablePool uses atomic operations for thread-safe allocation
+unsafe impl Send for ExecutablePool {}
+unsafe impl Sync for ExecutablePool {}
 
 #[cfg(test)]
 mod tests {

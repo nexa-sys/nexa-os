@@ -1533,6 +1533,8 @@ impl VmInstance {
                 let byte = address_space.ram().read_u8(VGA_TEXT_BASE + i as u64);
                 vga.write_vram_byte(i, byte);
             }
+            // Render text buffer to framebuffer
+            vga.render_text_to_framebuffer();
             log::info!("[VM] Synced VGA text buffer from firmware ({} bytes)", VGA_TEXT_SIZE);
         }
         
@@ -1601,14 +1603,18 @@ impl VmInstance {
                     
                     // Log every 1000 iterations for debugging
                     if iter_count % 1000 == 0 {
-                        log::info!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
+                        log::debug!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
                     }
                     
                     // Check if CPU is halted (waiting for interrupt)
                     if bsp.is_halted() {
-                        // Process pending interrupts or sleep briefly
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                        continue;
+                        // TODO: Check for pending interrupts here
+                        // For now, simulate timer interrupt every ~10ms to allow HLT loop profiling
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        // Wake CPU to continue execution (simulates interrupt arrival)
+                        // This allows HLT loops to be profiled and potentially JIT-compiled
+                        bsp.wake();
+                        // Don't continue - let execute() run so HLT gets profiled
                     }
                     
                     // Execute one block/instruction
@@ -1621,7 +1627,7 @@ impl VmInstance {
                                     bsp.write_rip(next_rip);
                                     // Log first few iterations
                                     if iter_count <= 10 {
-                                        log::info!("[JIT] Continue: next_rip={:#x}", next_rip);
+                                        log::debug!("[JIT] Continue: next_rip={:#x}", next_rip);
                                     }
                                 }
                                 ExecuteResult::Halt => {
@@ -1800,6 +1806,8 @@ impl VmInstance {
                 2 => vga.write_vram_word(offset, value as u16),
                 _ => {}
             }
+            // Render after VRAM write
+            vga.render_text_to_framebuffer();
         } else {
             log::trace!("[MMIO] Unhandled write addr={:#x} size={} value={:#x}", addr, size, value);
         }

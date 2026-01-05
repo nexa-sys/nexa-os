@@ -365,13 +365,13 @@ impl IrBuilder {
             Mnemonic::Ret => self.translate_ret(instr),
             Mnemonic::Lea => self.translate_lea(instr),
             Mnemonic::Nop => { /* nothing */ }
-            Mnemonic::Hlt => self.emit_exit(ExitReason::Halt, instr.rip),
+            Mnemonic::Hlt => self.emit_exit(ExitReason::Halt, instr.rip, instr.rip + instr.len as u64),
             Mnemonic::Int | Mnemonic::Int3 => self.translate_int(instr),
             Mnemonic::In => self.translate_in(instr),
             Mnemonic::Out => self.translate_out(instr),
             _ => {
                 // Fallback: exit to interpreter
-                self.emit_exit(ExitReason::Normal, instr.rip);
+                self.emit_exit(ExitReason::Normal, instr.rip, instr.rip + instr.len as u64);
             }
         }
     }
@@ -476,6 +476,26 @@ impl IrBuilder {
     fn translate_jmp(&mut self, instr: &super::decoder::DecodedInstr) {
         use super::decoder::Operand;
         
+        // Store all registers before exit
+        let gpr_instrs: Vec<_> = (0..16).map(|i| IrInstr {
+            dst: VReg::NONE,
+            op: IrOp::StoreGpr(i as u8, self.gpr_map[i]),
+            guest_rip: instr.rip,
+            flags: IrFlags::empty(),
+        }).collect();
+        for ir in gpr_instrs {
+            self.current_block_mut().push(ir);
+        }
+        
+        let flags_vreg = self.flags_vreg;
+        self.current_block_mut().push(IrInstr {
+            dst: VReg::NONE,
+            op: IrOp::StoreFlags(flags_vreg),
+            guest_rip: instr.rip,
+            flags: IrFlags::empty(),
+        });
+        
+        // Set RIP to jump target
         match &instr.operands[0] {
             Operand::Rel(offset) => {
                 let target = (instr.rip as i64 + instr.len as i64 + offset) as u64;
@@ -484,7 +504,7 @@ impl IrBuilder {
                     dst: VReg::NONE,
                     op: IrOp::StoreRip(target_vreg),
                     guest_rip: instr.rip,
-                    flags: IrFlags::TERMINATOR,
+                    flags: IrFlags::empty(),
                 });
             }
             _ => {
@@ -493,12 +513,18 @@ impl IrBuilder {
                     dst: VReg::NONE,
                     op: IrOp::StoreRip(target),
                     guest_rip: instr.rip,
-                    flags: IrFlags::TERMINATOR,
+                    flags: IrFlags::empty(),
                 });
             }
         }
         
-        self.emit_exit(ExitReason::Normal, instr.rip);
+        // Exit to execute at the new RIP
+        self.current_block_mut().push(IrInstr {
+            dst: VReg::NONE,
+            op: IrOp::Exit(ExitReason::Normal),
+            guest_rip: instr.rip,
+            flags: IrFlags::TERMINATOR | IrFlags::SIDE_EFFECT,
+        });
     }
     
     fn translate_jcc(&mut self, instr: &super::decoder::DecodedInstr) {
@@ -619,7 +645,7 @@ impl IrBuilder {
             _ => 3, // INT3
         };
         
-        self.emit_exit(ExitReason::Interrupt(vector), instr.rip);
+        self.emit_exit(ExitReason::Interrupt(vector), instr.rip, instr.rip + instr.len as u64);
     }
     
     fn translate_in(&mut self, instr: &super::decoder::DecodedInstr) {
@@ -629,7 +655,7 @@ impl IrBuilder {
             Operand::Imm(v) => *v as u16,
             Operand::Reg(r) if r.index == 2 => { // DX
                 // Dynamic port - need to exit
-                self.emit_exit(ExitReason::IoRead(0, 0), instr.rip);
+                self.emit_exit(ExitReason::IoRead(0, 0), instr.rip, instr.rip + instr.len as u64);
                 return;
             }
             _ => 0,
@@ -640,7 +666,7 @@ impl IrBuilder {
             _ => 1,
         };
         
-        self.emit_exit(ExitReason::IoRead(port, size), instr.rip);
+        self.emit_exit(ExitReason::IoRead(port, size), instr.rip, instr.rip + instr.len as u64);
         self.block.meta.has_io_ops = true;
     }
     
@@ -657,7 +683,7 @@ impl IrBuilder {
             _ => 1,
         };
         
-        self.emit_exit(ExitReason::IoWrite(port, size), instr.rip);
+        self.emit_exit(ExitReason::IoWrite(port, size), instr.rip, instr.rip + instr.len as u64);
         self.block.meta.has_io_ops = true;
     }
     
@@ -678,7 +704,7 @@ impl IrBuilder {
         vreg
     }
     
-    fn emit_exit(&mut self, reason: ExitReason, rip: u64) {
+    fn emit_exit(&mut self, reason: ExitReason, rip: u64, next_rip: u64) {
         // Collect GPR mappings first to avoid borrow conflict
         let gpr_instrs: Vec<_> = (0..16).map(|i| IrInstr {
             dst: VReg::NONE,
@@ -697,6 +723,21 @@ impl IrBuilder {
         self.current_block_mut().push(IrInstr {
             dst: VReg::NONE,
             op: IrOp::StoreFlags(flags_vreg),
+            guest_rip: rip,
+            flags: IrFlags::empty(),
+        });
+        
+        // Store next RIP so execution can resume after exit
+        let next_rip_vreg = self.block.alloc_vreg();
+        self.current_block_mut().push(IrInstr {
+            dst: next_rip_vreg,
+            op: IrOp::Const(next_rip as i64),
+            guest_rip: rip,
+            flags: IrFlags::empty(),
+        });
+        self.current_block_mut().push(IrInstr {
+            dst: VReg::NONE,
+            op: IrOp::StoreRip(next_rip_vreg),
             guest_rip: rip,
             flags: IrFlags::empty(),
         });

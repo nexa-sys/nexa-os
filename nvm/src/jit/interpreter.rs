@@ -67,6 +67,9 @@ impl Interpreter {
     ) -> JitResult<ExecuteResult> {
         use crate::cpu::SegmentRegister;
         
+        // Record block execution for hot spot detection
+        profile.record_block(start_rip);
+        
         let mut rip = start_rip;
         let mut executed = 0;
         
@@ -91,7 +94,7 @@ impl Interpreter {
             
             // Debug first few instructions
             if executed < 30 {
-                log::info!("[Interp] RIP={:#x} mnemonic={:?} len={} bytes={:02x?}", 
+                log::debug!("[Interp] RIP={:#x} mnemonic={:?} len={} bytes={:02x?}", 
                           rip, instr.mnemonic, instr.len, &bytes[..instr.len as usize]);
             }
             
@@ -103,7 +106,7 @@ impl Interpreter {
             match result {
                 InstrResult::Continue(next_rip) => {
                     if executed <= 30 {
-                        log::info!("[Interp] Continue to {:#x}", next_rip);
+                        log::debug!("[Interp] Continue to {:#x}", next_rip);
                     }
                     rip = next_rip;
                 }
@@ -118,7 +121,7 @@ impl Interpreter {
                 InstrResult::ModeChanged(next_rip) => {
                     // CPU mode changed - exit block so next iteration re-syncs mode
                     cpu.write_rip(next_rip);
-                    log::info!("[Interp] Mode changed at {:#x}, exiting block", instr.rip);
+                    log::debug!("[Interp] Mode changed at {:#x}, exiting block", instr.rip);
                     return Ok(ExecuteResult::Continue { next_rip });
                 }
             }
@@ -273,7 +276,7 @@ impl Interpreter {
                     let lme_changed = (old_efer & 0x100) != (value & 0x100);  // LME bit
                     let lma_changed = (old_efer & 0x400) != (value & 0x400);  // LMA bit
                     if lme_changed || lma_changed {
-                        log::info!("[JIT] WRMSR EFER: {:#x} -> {:#x}, mode change!", old_efer, value);
+                        log::debug!("[JIT] WRMSR EFER: {:#x} -> {:#x}, mode change!", old_efer, value);
                         return Ok(InstrResult::ModeChanged(next_rip));
                     }
                 } else {
@@ -331,7 +334,7 @@ impl Interpreter {
                         let pe_changed = (old_cr0 & 1) != (value & 1);
                         let pg_changed = (old_cr0 & 0x8000_0000) != (value & 0x8000_0000);
                         if pe_changed || pg_changed {
-                            log::info!("[Interp] MOV CR0: {:#x} -> {:#x}, mode change!", old_cr0, value);
+                            log::debug!("[Interp] MOV CR0: {:#x} -> {:#x}, mode change!", old_cr0, value);
                             return Ok(InstrResult::ModeChanged(next_rip));
                         }
                         return Ok(InstrResult::Continue(next_rip));
@@ -613,7 +616,7 @@ impl Interpreter {
                 // Check if mode changed (CS.L bit affects decoder mode)
                 let new_mode = Self::get_cpu_mode(cpu);
                 if new_mode != old_mode {
-                    log::info!("[Interp] JMP FAR changed mode: {:?} -> {:?}", old_mode, new_mode);
+                    log::debug!("[Interp] JMP FAR changed mode: {:?} -> {:?}", old_mode, new_mode);
                     return Ok(InstrResult::ModeChanged(linear));
                 }
                 
@@ -856,11 +859,11 @@ impl Interpreter {
         // Update the appropriate register
         match instr.mnemonic {
             Mnemonic::Lgdt => {
-                log::info!("[JIT] LGDT: limit={:#x}, base={:#x} at RIP={:#x}", limit, base, instr.rip);
+                log::debug!("[JIT] LGDT: limit={:#x}, base={:#x} at RIP={:#x}", limit, base, instr.rip);
                 cpu.set_gdtr(limit, base);
             }
             Mnemonic::Lidt => {
-                log::info!("[JIT] LIDT: limit={:#x}, base={:#x} at RIP={:#x}", limit, base, instr.rip);
+                log::debug!("[JIT] LIDT: limit={:#x}, base={:#x} at RIP={:#x}", limit, base, instr.rip);
                 cpu.set_idtr(limit, base);
             }
             _ => unreachable!(),

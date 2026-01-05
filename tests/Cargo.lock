@@ -1590,6 +1590,7 @@ dependencies = [
  "atty",
  "axum",
  "base64 0.21.7",
+ "bitflags 2.10.0",
  "chrono",
  "config",
  "crossbeam-channel",
