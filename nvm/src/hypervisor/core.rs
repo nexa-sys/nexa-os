@@ -1603,7 +1603,7 @@ impl VmInstance {
                     
                     // Log every 1000 iterations for debugging
                     if iter_count % 1000 == 0 {
-                        log::debug!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
+                        log::trace!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
                     }
                     
                     // Check if CPU is halted (waiting for interrupt)
@@ -1627,13 +1627,13 @@ impl VmInstance {
                                     bsp.write_rip(next_rip);
                                     // Log first few iterations
                                     if iter_count <= 10 {
-                                        log::debug!("[JIT] Continue: next_rip={:#x}", next_rip);
+                                        log::trace!("[JIT] Continue: next_rip={:#x}", next_rip);
                                     }
                                 }
                                 ExecuteResult::Halt => {
                                     // CPU halted (HLT instruction)
                                     bsp.halt();
-                                    log::debug!("[JIT] CPU halted at RIP={:#x}", bsp.read_rip());
+                                    log::trace!("[JIT] CPU halted at RIP={:#x}", bsp.read_rip());
                                 }
                                 ExecuteResult::Shutdown | ExecuteResult::Reset => {
                                     log::info!("[JIT] VM shutdown/reset requested");
@@ -1660,7 +1660,7 @@ impl VmInstance {
                                     }
                                 }
                                 ExecuteResult::Interrupt { vector } => {
-                                    log::debug!("[JIT] Interrupt {}", vector);
+                                    log::trace!("[JIT] Interrupt {}", vector);
                                     // Wake CPU if halted to handle interrupt
                                     if bsp.is_halted() {
                                         bsp.wake();
@@ -1892,12 +1892,14 @@ impl VmInstance {
         crate::jit::JitConfig {
             tiered_compilation: true,
             thresholds: TierThresholds {
-                interpreter_to_s1: 10,   // Compile after 10 executions
-                s1_to_s2: 1000,          // Optimize after 1000 executions
+                interpreter_to_s1: 100,  // ZingJDK default: CompileThreshold=100
+                s1_to_s2: 2000,          // ZingJDK default: Tier3CompileThreshold=2000
                 ..Default::default()
             },
-            code_cache_size: 64 * 1024 * 1024,  // 64MB code cache
-            profile_db_size: 10000,
+            code_cache_initial_size: 16 * 1024 * 1024,  // 16MB initial
+            code_cache_max_size: 256 * 1024 * 1024,     // 256MB max
+            code_cache_growth_factor: 1.5,              // 50% growth
+            profile_db_size: 100_000,
             loop_unrolling: true,
             aggressive_inlining: true,
             ..Default::default()

@@ -402,12 +402,20 @@ pub enum PersistFormat {
     All,
 }
 
-/// Tier promotion thresholds
+/// Tier promotion thresholds (ZingJDK-inspired defaults)
+/// 
+/// Reference: Azul Zing JDK defaults for tiered compilation:
+/// - CompileThreshold: 100 (interpreter → baseline)
+/// - Tier2CompileThreshold: 500 (for profiling tier)
+/// - Tier3CompileThreshold: 2000 (baseline → optimizing)
+/// - Tier4CompileThreshold: 15000 (full optimization)
 #[derive(Debug, Clone)]
 pub struct TierThresholds {
-    /// Invocations before promoting Interpreter → S1
+    /// Invocations before promoting Interpreter → S1 (baseline compilation)
+    /// ZingJDK default: 100
     pub interpreter_to_s1: u64,
-    /// Invocations before promoting S1 → S2
+    /// Invocations before promoting S1 → S2 (optimizing compilation)
+    /// ZingJDK default: 2000-5000 depending on method size
     pub s1_to_s2: u64,
     /// Back-edge count threshold for OSR (on-stack replacement)
     pub osr_threshold: u64,
@@ -418,29 +426,35 @@ pub struct TierThresholds {
 impl Default for TierThresholds {
     fn default() -> Self {
         Self {
-            interpreter_to_s1: 100,      // Quick promotion to S1
-            s1_to_s2: 10_000,            // S2 for hot code
+            interpreter_to_s1: 100,      // ZingJDK: CompileThreshold=100
+            s1_to_s2: 2000,              // ZingJDK: Tier3CompileThreshold=2000
             osr_threshold: 5_000,        // OSR for hot loops
             s2_min_block_size: 64,       // Don't S2 tiny blocks
         }
     }
 }
 
-/// JIT configuration
+/// JIT configuration with ZingJDK-inspired defaults
 #[derive(Debug, Clone)]
 pub struct JitConfig {
     /// Enable tiered compilation
     pub tiered_compilation: bool,
     /// Tier promotion thresholds
     pub thresholds: TierThresholds,
-    /// Code cache size (bytes)
-    pub code_cache_size: usize,
+    /// Initial code cache size (bytes)
+    pub code_cache_initial_size: usize,
+    /// Maximum code cache size (bytes) - cache grows dynamically up to this limit
+    pub code_cache_max_size: usize,
+    /// Code cache growth factor when expanding (1.5 = 50% growth)
+    pub code_cache_growth_factor: f64,
     /// Profile database size (entries)
     pub profile_db_size: usize,
-    /// Enable ReadyNow! preloading
+    /// Enable ReadyNow! preloading (default: true)
     pub readynow_enabled: bool,
-    /// ReadyNow! cache path
+    /// ReadyNow! cache path (default: ~/.nvm/readynow/)
     pub readynow_path: Option<String>,
+    /// Auto-save ReadyNow! on VM shutdown
+    pub readynow_auto_save: bool,
     /// Enable aggressive inlining in S2
     pub aggressive_inlining: bool,
     /// Enable loop unrolling
@@ -453,13 +467,20 @@ pub struct JitConfig {
 
 impl Default for JitConfig {
     fn default() -> Self {
+        // Default ReadyNow! path: ~/.nvm/readynow/
+        let readynow_path = dirs::home_dir()
+            .map(|p| p.join(".nvm").join("readynow").to_string_lossy().to_string());
+        
         Self {
             tiered_compilation: true,
             thresholds: TierThresholds::default(),
-            code_cache_size: 64 * 1024 * 1024,  // 64MB code cache
-            profile_db_size: 1_000_000,          // 1M profile entries
-            readynow_enabled: true,
-            readynow_path: None,
+            code_cache_initial_size: 16 * 1024 * 1024,  // 16MB initial
+            code_cache_max_size: 256 * 1024 * 1024,     // 256MB max (like ZingJDK ReservedCodeCacheSize)
+            code_cache_growth_factor: 1.5,              // Grow by 50% each expansion
+            profile_db_size: 1_000_000,                 // 1M profile entries
+            readynow_enabled: true,                     // ReadyNow! ON by default
+            readynow_path,
+            readynow_auto_save: true,                   // Auto-save on shutdown
             aggressive_inlining: true,
             loop_unrolling: true,
             max_inline_depth: 9,
@@ -613,6 +634,10 @@ pub struct JitEngine {
     stats: Arc<JitStats>,
     /// Is engine running?
     running: AtomicBool,
+    /// Has logged first S1 compilation for this VM?
+    logged_first_s1: AtomicBool,
+    /// Has logged first S2 compilation for this VM?
+    logged_first_s2: AtomicBool,
 }
 
 impl JitEngine {
@@ -642,12 +667,18 @@ impl JitEngine {
                 ..Default::default()
             }),
             codegen: CodeGen::new(),
-            code_cache: CodeCache::new(config.code_cache_size as u64),
+            code_cache: CodeCache::new_dynamic(
+                config.code_cache_initial_size as u64,
+                config.code_cache_max_size as u64,
+                config.code_cache_growth_factor,
+            ),
             blocks: RwLock::new(HashMap::new()),
             profile_db: ProfileDb::new(config.profile_db_size),
             readynow,
             stats: Arc::new(JitStats::default()),
             running: AtomicBool::new(false),
+            logged_first_s1: AtomicBool::new(false),
+            logged_first_s2: AtomicBool::new(false),
             config,
         }
     }
@@ -670,21 +701,28 @@ impl JitEngine {
         
         // Check tier promotion
         let tier = self.determine_tier(&block, invocations);
+        let current_tier = block.get_tier();
         
-        log::debug!("[JIT] Block {:#x}: invocations={}, tier={:?}", rip, invocations, tier);
+        // Log at key thresholds that relate to JIT compilation decisions:
+        // 100: S1 trigger, 500: warmup, 1000: hot, 2000: S2 trigger, 10000: very hot
+        match invocations {
+            100 | 500 | 1000 | 2000 | 10000 => {
+                log::debug!("[JIT] Block {:#x}: invocations={}, tier={:?}", rip, invocations, tier);
+            }
+            _ => {
+                log::trace!("[JIT] Block {:#x}: invocations={}, tier={:?}", rip, invocations, tier);
+            }
+        }
         
         // Check if we need to upgrade from S1 to S2
-        let current_tier = block.get_tier();
         if tier == ExecutionTier::S2 && current_tier != ExecutionTier::S2 {
-            // Recompile with S2 optimizations
-            log::debug!("[JIT] Upgrading block {:#x} from {:?} to S2", rip, current_tier);
             self.compile_s2(cpu, memory, rip, &block)?;
         }
         
         // Check code cache for compiled code
         if let Some(entry) = self.code_cache.lookup(rip) {
             self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-            log::debug!("[JIT] Cache hit at {:#x}, executing native", rip);
+            log::trace!("[JIT] Cache hit at {:#x}, executing native", rip);
             return self.execute_native(cpu, memory, entry);
         }
         
@@ -699,7 +737,6 @@ impl JitEngine {
                 // Compile with S1 if not already in code cache
                 log::debug!("[JIT] Compiling S1 for block {:#x}", rip);
                 self.compile_s1(cpu, memory, rip, &block)?;
-                log::debug!("[JIT] S1 compiled successfully for {:#x}", rip);
                 self.stats.s1_execs.fetch_add(1, Ordering::Relaxed);
                 // Execute from code cache (compile_s1 stores there)
                 if let Some(code_ptr) = self.code_cache.lookup(rip) {
@@ -763,6 +800,11 @@ impl JitEngine {
         // Get native code size
         let native_len = s1_block.native.len();
         
+        // Log INFO only for VM's first S1 compilation
+        if !self.logged_first_s1.swap(true, Ordering::Relaxed) {
+            log::info!("[JIT] First S1 compilation triggered for this VM");
+        }
+        
         log::debug!("[JIT] S1 compiled {:#x}: {} bytes of native code", rip, native_len);
         
         // Allocate executable memory and copy code
@@ -806,7 +848,7 @@ impl JitEngine {
         
         // S2 requires an existing S1 block to optimize
         // First ensure we have S1 compiled
-        if block.ir.is_none() {
+        let native_len = if block.ir.is_none() {
             // Need to compile with S1 first
             let mut guest_code = vec![0u8; 4096];
             for (i, byte) in guest_code.iter_mut().enumerate() {
@@ -816,10 +858,12 @@ impl JitEngine {
             
             // Recompile with S2 optimizations
             let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
+            let len = s2_block.native.len();
             
             // Replace in code cache
             self.code_cache.replace(rip, s2_block.native)?;
-        } else if let Some(ref ir) = block.ir {
+            len
+        } else if let Some(ref _ir) = block.ir {
             // We have existing IR, find S1 block somehow
             // For now, recompile from scratch
             let mut guest_code = vec![0u8; 4096];
@@ -828,8 +872,19 @@ impl JitEngine {
             }
             let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
             let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
+            let len = s2_block.native.len();
             self.code_cache.replace(rip, s2_block.native)?;
+            len
+        } else {
+            0
+        };
+        
+        // Log INFO only for VM's first S2 compilation
+        if !self.logged_first_s2.swap(true, Ordering::Relaxed) {
+            log::info!("[JIT] First S2 compilation triggered for this VM");
         }
+        
+        log::debug!("[JIT] S2 compiled block {:#x}: {} bytes of native code", rip, native_len);
         
         // Update block tier to S2
         block.set_tier(ExecutionTier::S2);
@@ -846,7 +901,7 @@ impl JitEngine {
         // Create JitState from VirtualCpu - this is the JIT's private copy
         let mut jit_state = JitState::from_vcpu(cpu, memory);
         
-        log::debug!("[JIT] Before native: JitState.rip={:#x}", jit_state.rip);
+        log::trace!("[JIT] Before native: JitState.rip={:#x}", jit_state.rip);
         
         // Safety: native code was generated by our codegen and expects JitState pointer
         let result = unsafe {
@@ -857,7 +912,7 @@ impl JitEngine {
             func(&mut jit_state as *mut JitState)
         };
         
-        log::debug!("[JIT] After native: JitState.rip={:#x}, result={:#x}", jit_state.rip, result);
+        log::trace!("[JIT] After native: JitState.rip={:#x}, result={:#x}", jit_state.rip, result);
         
         // Copy JitState back to VirtualCpu
         jit_state.to_vcpu(cpu);
@@ -866,7 +921,6 @@ impl JitEngine {
     }
     
     fn execute_s1(&self, cpu: &VirtualCpu, memory: &AddressSpace, block: &BlockMeta) -> JitResult<ExecuteResult> {
-        log::debug!("[JIT] execute_s1: block.native_code={:?}", block.native_code);
         if let Some(code_ptr) = block.native_code {
             // Create JitState from VirtualCpu
             let mut jit_state = JitState::from_vcpu(cpu, memory);
@@ -1053,6 +1107,34 @@ impl JitEngine {
     /// Get configuration
     pub fn config(&self) -> &JitConfig {
         &self.config
+    }
+    
+    /// Shutdown the JIT engine
+    /// 
+    /// This saves ReadyNow! cache if auto_save is enabled.
+    pub fn shutdown(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        
+        if self.config.readynow_enabled && self.config.readynow_auto_save {
+            log::info!("[JIT] Saving ReadyNow! cache on shutdown...");
+            if let Err(e) = self.save_readynow(PersistFormat::All) {
+                log::warn!("[JIT] Failed to save ReadyNow! cache: {:?}", e);
+            } else {
+                log::info!("[JIT] ReadyNow! cache saved successfully");
+            }
+        }
+    }
+}
+
+impl Drop for JitEngine {
+    fn drop(&mut self) {
+        // Auto-save ReadyNow! on drop if enabled
+        if self.config.readynow_enabled && self.config.readynow_auto_save {
+            log::info!("[JIT] Auto-saving ReadyNow! cache on drop...");
+            if let Err(e) = self.save_readynow(PersistFormat::All) {
+                log::warn!("[JIT] Failed to auto-save ReadyNow! cache: {:?}", e);
+            }
+        }
     }
 }
 

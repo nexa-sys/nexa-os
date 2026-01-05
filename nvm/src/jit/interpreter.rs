@@ -78,7 +78,7 @@ impl Interpreter {
         let cr0 = cpu.read_cr0();
         let efer = cpu.read_msr(0xC000_0080); // EFER
         let cs_attrib = cpu.read_segment_attrib(SegmentRegister::Cs);
-        log::debug!("[Interp] Block start at {:#x}, mode={:?}, CR0={:#x}, EFER={:#x}, CS.attrib={:#x}", 
+        log::trace!("[Interp] Block start at {:#x}, mode={:?}, CR0={:#x}, EFER={:#x}, CS.attrib={:#x}", 
                    start_rip, mode, cr0, efer, cs_attrib);
         let decoder = X86Decoder::with_mode(mode);
 
@@ -94,7 +94,7 @@ impl Interpreter {
             
             // Debug first few instructions
             if executed < 30 {
-                log::debug!("[Interp] RIP={:#x} mnemonic={:?} len={} bytes={:02x?}", 
+                log::trace!("[Interp] RIP={:#x} mnemonic={:?} len={} bytes={:02x?}", 
                           rip, instr.mnemonic, instr.len, &bytes[..instr.len as usize]);
             }
             
@@ -106,7 +106,7 @@ impl Interpreter {
             match result {
                 InstrResult::Continue(next_rip) => {
                     if executed <= 30 {
-                        log::debug!("[Interp] Continue to {:#x}", next_rip);
+                        log::trace!("[Interp] Continue to {:#x}", next_rip);
                     }
                     rip = next_rip;
                 }
@@ -258,7 +258,7 @@ impl Interpreter {
                 let value = cpu.read_msr(msr_addr);
                 cpu.write_gpr(0, value & 0xFFFF_FFFF);  // EAX = low 32 bits
                 cpu.write_gpr(2, value >> 32);          // EDX = high 32 bits
-                log::debug!("[JIT] RDMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
+                log::trace!("[JIT] RDMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
                 Ok(InstrResult::Continue(next_rip))
             }
             
@@ -283,7 +283,7 @@ impl Interpreter {
                     cpu.write_msr(msr_addr, value);
                 }
                 
-                log::debug!("[JIT] WRMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
+                log::trace!("[JIT] WRMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
                 Ok(InstrResult::Continue(next_rip))
             }
             

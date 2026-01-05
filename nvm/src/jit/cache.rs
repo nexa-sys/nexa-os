@@ -71,7 +71,7 @@ impl CompiledBlock {
     }
 }
 
-/// Code cache for compiled blocks
+/// Code cache for compiled blocks with dynamic expansion
 pub struct CodeCache {
     /// RIP -> compiled block
     blocks: RwLock<HashMap<u64, Box<CompiledBlock>>>,
@@ -83,8 +83,14 @@ pub struct CodeCache {
     /// Total host code size
     total_size: AtomicU64,
     
-    /// Maximum cache size (bytes)
-    max_size: u64,
+    /// Current cache size limit (may grow)
+    current_max_size: AtomicU64,
+    
+    /// Absolute maximum cache size (cannot exceed)
+    hard_max_size: u64,
+    
+    /// Growth factor for expansion (e.g., 1.5 = 50% growth)
+    growth_factor: f64,
     
     /// Current epoch for LRU
     epoch: AtomicU64,
@@ -92,8 +98,11 @@ pub struct CodeCache {
     /// Statistics
     stats: CacheStats,
     
-    /// Executable memory pool
-    exec_pool: ExecutablePool,
+    /// Executable memory pools (dynamically allocated)
+    exec_pools: RwLock<Vec<ExecutablePool>>,
+    
+    /// Initial pool size
+    initial_pool_size: usize,
 }
 
 /// Cache statistics
@@ -105,6 +114,7 @@ pub struct CacheStats {
     pub s1_compiles: AtomicU64,
     pub s2_compiles: AtomicU64,
     pub tier_promotions: AtomicU64,
+    pub expansions: AtomicU64,
 }
 
 impl Default for CacheStats {
@@ -117,26 +127,108 @@ impl Default for CacheStats {
             s1_compiles: AtomicU64::new(0),
             s2_compiles: AtomicU64::new(0),
             tier_promotions: AtomicU64::new(0),
+            expansions: AtomicU64::new(0),
         }
     }
 }
 
 impl CodeCache {
+    /// Create a new code cache with fixed size (legacy API)
     pub fn new(max_size: u64) -> Self {
+        Self::new_dynamic(max_size, max_size, 1.0)
+    }
+    
+    /// Create a new code cache with dynamic expansion support
+    /// 
+    /// # Arguments
+    /// * `initial_size` - Initial cache size (first pool size)
+    /// * `max_size` - Maximum cache size (hard limit)
+    /// * `growth_factor` - Factor for pool size growth (e.g., 1.5)
+    pub fn new_dynamic(initial_size: u64, max_size: u64, growth_factor: f64) -> Self {
+        let initial_pool_size = initial_size.min(DEFAULT_EXEC_POOL_SIZE as u64) as usize;
+        let mut pools = Vec::new();
+        pools.push(ExecutablePool::new(initial_pool_size));
+        
+        log::info!("[JIT] CodeCache: initial={}MB, max={}MB, growth={}x",
+            initial_size / (1024 * 1024),
+            max_size / (1024 * 1024),
+            growth_factor);
+        
         Self {
             blocks: RwLock::new(HashMap::new()),
             regions: RwLock::new(BTreeMap::new()),
             total_size: AtomicU64::new(0),
-            max_size,
+            current_max_size: AtomicU64::new(initial_size),
+            hard_max_size: max_size,
+            growth_factor,
             epoch: AtomicU64::new(0),
             stats: CacheStats::default(),
-            exec_pool: ExecutablePool::new(DEFAULT_EXEC_POOL_SIZE),
+            exec_pools: RwLock::new(pools),
+            initial_pool_size,
         }
     }
     
     /// Allocate executable memory and copy code into it
+    /// Dynamically expands the code cache if needed
     pub fn allocate_code(&self, code: &[u8]) -> Option<*const u8> {
-        self.exec_pool.allocate(code)
+        // Try existing pools first
+        {
+            let pools = self.exec_pools.read().unwrap();
+            for pool in pools.iter() {
+                if let Some(ptr) = pool.allocate(code) {
+                    return Some(ptr);
+                }
+            }
+        }
+        
+        // Need to expand - try to allocate a new pool
+        self.try_expand_cache(code.len())?;
+        
+        // Retry allocation
+        let pools = self.exec_pools.read().unwrap();
+        pools.last()?.allocate(code)
+    }
+    
+    /// Try to expand the code cache by adding a new executable memory pool
+    fn try_expand_cache(&self, min_needed: usize) -> Option<()> {
+        let current = self.current_max_size.load(Ordering::Relaxed);
+        
+        // Calculate new pool size
+        let new_pool_size = ((self.initial_pool_size as f64 * self.growth_factor) as usize)
+            .max(min_needed * 2)
+            .max(4 * 1024 * 1024); // Minimum 4MB
+        
+        let new_total = current + new_pool_size as u64;
+        
+        if new_total > self.hard_max_size {
+            log::warn!("[JIT] CodeCache: cannot expand beyond hard limit {}MB", 
+                self.hard_max_size / (1024 * 1024));
+            return None;
+        }
+        
+        // Allocate new pool
+        let mut pools = self.exec_pools.write().unwrap();
+        let new_pool = ExecutablePool::new(new_pool_size);
+        pools.push(new_pool);
+        
+        self.current_max_size.store(new_total, Ordering::Relaxed);
+        self.stats.expansions.fetch_add(1, Ordering::Relaxed);
+        
+        log::info!("[JIT] CodeCache: expanded to {}MB (pools: {})",
+            new_total / (1024 * 1024),
+            pools.len());
+        
+        Some(())
+    }
+    
+    /// Get current cache capacity
+    pub fn capacity(&self) -> u64 {
+        self.current_max_size.load(Ordering::Relaxed)
+    }
+    
+    /// Get expansion count
+    pub fn expansion_count(&self) -> u64 {
+        self.stats.expansions.load(Ordering::Relaxed)
     }
     
     /// Look up a compiled block by guest RIP
@@ -179,10 +271,15 @@ impl CodeCache {
         let guest_start = block.guest_rip;
         let guest_end = guest_start + block.guest_size as u64;
         
-        // Check if we need to evict
+        // Check if we need to evict (use current dynamic limit)
         let current_size = self.total_size.load(Ordering::Relaxed);
-        if current_size + host_size > self.max_size {
-            self.evict_lru(host_size)?;
+        let current_max = self.current_max_size.load(Ordering::Relaxed);
+        if current_size + host_size > current_max {
+            // Try to expand first before evicting
+            if self.try_expand_cache(host_size as usize).is_none() {
+                // Cannot expand, must evict
+                self.evict_lru(host_size)?;
+            }
         }
         
         // Track region

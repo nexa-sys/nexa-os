@@ -78,7 +78,17 @@ impl Architecture {
 }
 
 impl ReadyNowCache {
+    /// Create a new ReadyNow! cache
+    /// 
+    /// Creates the cache directory if it doesn't exist.
     pub fn new(cache_dir: &str, instance_id: &str) -> Self {
+        // Ensure cache directory exists
+        if let Err(e) = std::fs::create_dir_all(cache_dir) {
+            log::warn!("[ReadyNow!] Failed to create cache directory '{}': {}", cache_dir, e);
+        } else {
+            log::info!("[ReadyNow!] Cache directory: {}", cache_dir);
+        }
+        
         Self {
             cache_dir: cache_dir.to_string(),
             instance_id: instance_id.to_string(),
