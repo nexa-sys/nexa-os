@@ -63,6 +63,9 @@ pub mod profile;
 pub mod cache;
 pub mod nready;
 pub mod eviction;
+pub mod async_runtime;
+pub mod async_eviction;
+pub mod async_restore;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
@@ -80,6 +83,9 @@ pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
 pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock};
 pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
+pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot};
+pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
+pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
 
 // ============================================================================
 // JIT CPU State - Direct access structure for native code
@@ -146,8 +152,7 @@ impl JitState {
     
     pub const RIP_OFFSET: i32 = 0x80;
     pub const RFLAGS_OFFSET: i32 = 0x88;
-    pub const MEMORY_BASE_OFFSET: i32 = 0x90;
-    
+    pub const MEMORY_BASE_OFFSET: i32 = 0x90;  
     /// Create new JitState initialized to zero
     pub fn new() -> Self {
         Self {
@@ -1730,6 +1735,285 @@ impl NReadyStats {
     }
 }
 
+// ============================================================================
+// Async JIT Orchestrator - Zero-STW Unified Management
+// ============================================================================
+
+/// Configuration for the async JIT orchestrator
+#[derive(Debug, Clone)]
+pub struct AsyncJitConfig {
+    /// Number of compilation worker threads (0 = auto)
+    pub compile_workers: usize,
+    /// Number of restoration worker threads (0 = auto)
+    pub restore_workers: usize,
+    /// Enable prefetch for restoration
+    pub enable_prefetch: bool,
+    /// High watermark for cache eviction (percentage)
+    pub eviction_high_watermark: f64,
+    /// Low watermark for cache eviction (percentage)
+    pub eviction_low_watermark: f64,
+}
+
+impl Default for AsyncJitConfig {
+    fn default() -> Self {
+        Self {
+            compile_workers: 0, // Auto-detect
+            restore_workers: 0, // Auto-detect
+            enable_prefetch: true,
+            eviction_high_watermark: 0.80,
+            eviction_low_watermark: 0.60,
+        }
+    }
+}
+
+/// Unified async JIT orchestrator
+/// 
+/// Coordinates compilation, eviction, and restoration without VM pause.
+/// This is the recommended entry point for async JIT operations.
+///
+/// ## Zero-STW Guarantees
+///
+/// 1. **Compilation**: Happens in background workers. VM continues interpreting
+///    until compiled code is atomically installed.
+///
+/// 2. **Eviction**: Incremental, batch-based. Blocks are persisted in small
+///    batches with yields between, never blocking VM execution.
+///
+/// 3. **Restoration**: On-demand with prefetch. Cache misses trigger async
+///    restoration while VM falls back to interpret/recompile.
+///
+/// ## Usage
+///
+/// ```rust,ignore
+/// let orchestrator = AsyncJitOrchestrator::new(cache, nready, hotness, config);
+/// orchestrator.start();
+///
+/// // Request compilation (non-blocking)
+/// orchestrator.request_compile(rip, guest_size, checksum, exec_count, CompileTier::S1);
+///
+/// // On cache miss, check evicted index
+/// if orchestrator.is_evicted(rip) {
+///     orchestrator.request_restore(rip);  // Non-blocking
+///     // Fall back to interpreter while restoration proceeds
+/// }
+///
+/// orchestrator.shutdown();  // Graceful shutdown
+/// ```
+pub struct AsyncJitOrchestrator {
+    /// Async compilation runtime
+    compile_runtime: async_runtime::AsyncJitRuntime,
+    /// Async eviction manager  
+    eviction_manager: async_eviction::AsyncEvictionManager,
+    /// Async restoration manager
+    restore_manager: async_restore::AsyncRestoreManager,
+    /// Code cache (shared)
+    cache: Arc<CodeCache>,
+    /// NReady! cache (shared)
+    nready: Arc<NReadyCache>,
+    /// Hotness tracker (shared)
+    hotness: Arc<HotnessTracker>,
+    /// Configuration
+    config: AsyncJitConfig,
+    /// Is orchestrator running?
+    running: AtomicBool,
+}
+
+impl AsyncJitOrchestrator {
+    /// Create a new async JIT orchestrator
+    pub fn new(
+        cache: Arc<CodeCache>,
+        nready: Arc<NReadyCache>,
+        hotness: Arc<HotnessTracker>,
+        config: AsyncJitConfig,
+    ) -> Self {
+        // Create compile callback
+        let compile_callback = Arc::new(async_runtime::CodeCacheInstaller::new(Arc::clone(&cache)));
+        
+        // Create restore callback
+        let restore_callback = Arc::new(async_restore::CacheRestoreInstaller::new(
+            Arc::clone(&cache),
+            Arc::clone(&hotness),
+        ));
+        
+        // Build components
+        let compile_runtime = async_runtime::AsyncJitRuntime::new(
+            compile_callback,
+            if config.compile_workers == 0 { None } else { Some(config.compile_workers) },
+        );
+        
+        let eviction_manager = async_eviction::AsyncEvictionManager::new(
+            Arc::clone(&cache),
+            Arc::clone(&nready),
+            Arc::clone(&hotness),
+        );
+        
+        let restore_manager = async_restore::AsyncRestoreManager::new(
+            Arc::clone(&nready),
+            Arc::clone(&hotness),
+            restore_callback,
+            if config.restore_workers == 0 { None } else { Some(config.restore_workers) },
+        );
+        
+        Self {
+            compile_runtime,
+            eviction_manager,
+            restore_manager,
+            cache,
+            nready,
+            hotness,
+            config,
+            running: AtomicBool::new(false),
+        }
+    }
+    
+    /// Start all async workers
+    pub fn start(&mut self) {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return; // Already running
+        }
+        
+        log::info!("[AsyncJIT] Starting orchestrator");
+        
+        self.compile_runtime.start();
+        self.eviction_manager.start();
+        self.restore_manager.start();
+        
+        log::info!("[AsyncJIT] Orchestrator started");
+    }
+    
+    /// Request async compilation (non-blocking)
+    /// 
+    /// Returns true if request was queued, false if already in-flight.
+    pub fn request_compile(
+        &self,
+        rip: u64,
+        guest_size: u32,
+        checksum: u64,
+        exec_count: u64,
+        tier: CompileTier,
+    ) -> bool {
+        match tier {
+            CompileTier::S1 => self.compile_runtime.request_s1(rip, guest_size, checksum, exec_count),
+            CompileTier::S2 => self.compile_runtime.request_s2(rip, guest_size, checksum, exec_count, None),
+            CompileTier::Interpreter => false,
+        }
+    }
+    
+    /// Request async restoration (non-blocking)
+    ///
+    /// Returns true if request was queued, false if not evicted or already in-flight.
+    pub fn request_restore(&self, rip: u64) -> bool {
+        self.restore_manager.request_restore(rip, true)
+    }
+    
+    /// Check if a block was evicted (for fallback decision)
+    pub fn is_evicted(&self, rip: u64) -> bool {
+        self.hotness.evicted_index.get_evicted(rip).is_some()
+    }
+    
+    /// Check if compilation is in progress
+    pub fn is_compiling(&self, _rip: u64) -> bool {
+        // TODO: Track in-flight compilations
+        false
+    }
+    
+    /// Check if restoration is in progress
+    pub fn is_restoring(&self, rip: u64) -> bool {
+        self.restore_manager.is_restoring(rip)
+    }
+    
+    /// Trigger eviction check (for proactive cache management)
+    pub fn trigger_eviction(&self) {
+        self.eviction_manager.trigger();
+    }
+    
+    /// Emergency eviction when cache is critically full
+    pub fn emergency_eviction(&self, bytes_needed: u64) {
+        self.eviction_manager.emergency_evict(bytes_needed);
+    }
+    
+    /// Pause eviction (for critical operations)
+    pub fn pause_eviction(&self) {
+        self.eviction_manager.pause();
+    }
+    
+    /// Resume eviction
+    pub fn resume_eviction(&self) {
+        self.eviction_manager.resume();
+    }
+    
+    /// Get unified statistics
+    pub fn get_stats(&self) -> OrchestratorStats {
+        OrchestratorStats {
+            compile: self.compile_runtime.get_stats(),
+            eviction: self.eviction_manager.get_stats(),
+            restore: self.restore_manager.get_stats(),
+            cache_size: self.cache.total_size(),
+            cache_capacity: self.cache.capacity(),
+        }
+    }
+    
+    /// Shutdown all async workers gracefully
+    pub fn shutdown(&mut self) {
+        if !self.running.swap(false, Ordering::SeqCst) {
+            return; // Already stopped
+        }
+        
+        log::info!("[AsyncJIT] Shutting down orchestrator...");
+        
+        // Shutdown in reverse order
+        self.restore_manager.shutdown();
+        self.eviction_manager.shutdown();
+        self.compile_runtime.shutdown();
+        
+        log::info!("[AsyncJIT] Orchestrator shutdown complete");
+    }
+}
+
+impl Drop for AsyncJitOrchestrator {
+    fn drop(&mut self) {
+        if self.running.load(Ordering::Relaxed) {
+            self.shutdown();
+        }
+    }
+}
+
+/// Unified orchestrator statistics
+#[derive(Debug, Clone)]
+pub struct OrchestratorStats {
+    pub compile: AsyncStatsSnapshot,
+    pub eviction: async_eviction::EvictionStatsSnapshot,
+    pub restore: async_restore::RestoreStatsSnapshot,
+    pub cache_size: u64,
+    pub cache_capacity: u64,
+}
+
+impl OrchestratorStats {
+    /// Cache utilization percentage
+    pub fn cache_utilization(&self) -> f64 {
+        if self.cache_capacity == 0 {
+            return 0.0;
+        }
+        (self.cache_size as f64 / self.cache_capacity as f64) * 100.0
+    }
+    
+    /// Format summary for logging
+    pub fn summary(&self) -> String {
+        format!(
+            "Cache: {:.1}% ({}/{}MB) | Compile: {}/{} | Evict: {}/{} | Restore: {}/{}",
+            self.cache_utilization(),
+            self.cache_size / (1024 * 1024),
+            self.cache_capacity / (1024 * 1024),
+            self.compile.requests_completed,
+            self.compile.requests_submitted,
+            self.eviction.blocks_persisted,
+            self.eviction.blocks_discarded,
+            self.restore.restorations_success,
+            self.restore.requests_total,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1744,5 +2028,62 @@ mod tests {
     fn test_tier_thresholds() {
         let thresholds = TierThresholds::default();
         assert!(thresholds.interpreter_to_s1 < thresholds.s1_to_s2);
+    }
+    
+    #[test]
+    fn test_async_jit_config_default() {
+        let config = AsyncJitConfig::default();
+        assert_eq!(config.compile_workers, 0);
+        assert!(config.enable_prefetch);
+        assert!(config.eviction_high_watermark > config.eviction_low_watermark);
+    }
+    
+    #[test]
+    fn test_orchestrator_stats_summary() {
+        let stats = OrchestratorStats {
+            compile: AsyncStatsSnapshot {
+                requests_submitted: 100,
+                requests_completed: 90,
+                requests_failed: 5,
+                requests_dropped: 5,
+                s1_compilations: 80,
+                s2_compilations: 10,
+                queue_depth: 0,
+                peak_queue_depth: 10,
+                active_workers: 0,
+                avg_compile_time: std::time::Duration::from_micros(500),
+            },
+            eviction: async_eviction::EvictionStatsSnapshot {
+                cycles_started: 5,
+                cycles_completed: 5,
+                blocks_persisted: 50,
+                blocks_discarded: 30,
+                bytes_freed: 5 * 1024 * 1024,
+                bytes_to_disk: 3 * 1024 * 1024,
+                emergency_evictions: 0,
+                persist_errors: 0,
+                eviction_time_us: 1000,
+            },
+            restore: async_restore::RestoreStatsSnapshot {
+                requests_total: 20,
+                restorations_success: 18,
+                restorations_failed: 2,
+                native_restored: 15,
+                ir_restored: 3,
+                prefetch_hits: 5,
+                prefetch_misses: 2,
+                on_demand_count: 10,
+                avg_restore_time: std::time::Duration::from_micros(200),
+                queue_depth: 0,
+            },
+            cache_size: 50 * 1024 * 1024,
+            cache_capacity: 100 * 1024 * 1024,
+        };
+        
+        let summary = stats.summary();
+        assert!(summary.contains("50.0%"));
+        assert!(summary.contains("Compile"));
+        assert!(summary.contains("Evict"));
+        assert!(summary.contains("Restore"));
     }
 }

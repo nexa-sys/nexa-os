@@ -265,6 +265,11 @@ impl CodeCache {
         self.current_max_size.load(Ordering::Relaxed)
     }
     
+    /// Get current total size of cached code
+    pub fn total_size(&self) -> u64 {
+        self.total_size.load(Ordering::Relaxed)
+    }
+    
     /// Get expansion count
     pub fn expansion_count(&self) -> u64 {
         self.stats.expansions.load(Ordering::Relaxed)
