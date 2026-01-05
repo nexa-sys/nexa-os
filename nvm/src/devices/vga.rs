@@ -927,6 +927,13 @@ impl crate::memory::MmioHandler for VgaMmioHandler {
     }
     
     fn write(&self, offset: usize, size: u8, value: u64) {
+        // Log first few writes for debugging
+        static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 20 {
+            log::info!("[VGA MMIO] Write: offset=0x{:x}, size={}, value=0x{:x}", offset, size, value);
+        }
+        
         let mut vga = self.vga.write().unwrap();
         // Text buffer is at offset 0x18000 (0xB8000 - 0xA0000)
         if offset >= 0x18000 && offset < 0x18000 + TEXT_BUFFER_SIZE {

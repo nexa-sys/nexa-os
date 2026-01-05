@@ -317,3 +317,41 @@ grub-file --is-x86-multiboot2 target/x86_64-nexaos/debug/nexa-os
 ```
 
 Serial console output shows all kernel logs. QEMU's `-serial stdio` redirects to terminal.
+## NVM Hypervisor Development Rules
+
+### 运行 NVM 服务器
+
+**只能使用 `&>` 捕获输出，禁止使用后台进程、timeout 或其他命令包装：**
+
+```bash
+# ✅ 正确
+cd /home/hanxi-cat/dev/nexa-os-1/nvm && RUST_LOG=info cargo run --bin nvm-server &> /tmp/nvm.log
+
+# ❌ 错误 - 不要用后台进程
+cargo run --bin nvm-server &> /tmp/nvm.log &
+
+# ❌ 错误 - 不要用 timeout
+timeout 5 cargo run --bin nvm-server &> /tmp/nvm.log
+
+# ❌ 错误 - 不要用管道过滤
+cargo run --bin nvm-server 2>&1 | grep xxx
+```
+
+### JIT/固件架构原则
+
+**JIT 只负责执行指令，不负责初始化 CPU 状态。CPU 模式转换由固件代码自己完成：**
+
+1. **UEFI 启动流程**：CPU 从实模式开始，固件代码（SEC→PEI→DXE）负责模式转换
+   - SEC (16-bit real mode): 初始化段寄存器
+   - PEI (32-bit protected mode): 启用 PE，设置 GDT
+   - DXE (64-bit long mode): 启用 PAE, LME, PG
+
+2. **禁止走捷径**：不要为了"省事"让 JIT 或 manager 直接设置 CPU 到目标模式
+   - ❌ 错误：manager 直接设置 `cr0=0x80000011` 让 CPU 进入长模式
+   - ✅ 正确：manager 设置 `cr0=0x10`（实模式），让固件代码自己转换
+
+3. **JIT 只读取 CPU 状态**：decoder 根据当前 CR0/EFER 判断模式，不主动修改
+
+4. **禁止写 stub 实现**：所有指令必须完整实现，不许写 "TODO" 或空操作的 stub
+   - ❌ 错误：`Mnemonic::Lgdt => Ok(InstrResult::Continue(next_rip))` // stub
+   - ✅ 正确：完整实现 LGDT，读取内存中的 GDT 描述符并更新 CPU 状态

@@ -469,12 +469,23 @@ impl X86Decoder {
         // Get operand encoding for this opcode
         let encoding = self.get_operand_encoding(instr.opcode, &instr.prefixes);
         
+        // Check if we need ModR/M byte
+        let needs_modrm = encoding.iter().any(|e| matches!(e, OpEnc::ModRm | OpEnc::ModRmReg | OpEnc::SegRegModRm));
+        
+        let modrm = if needs_modrm {
+            let m = bytes.get(pos).copied().unwrap_or(0);
+            pos += 1;
+            Some(m)
+        } else {
+            None
+        };
+        
         for (i, enc) in encoding.iter().enumerate() {
             if *enc == OpEnc::None {
                 break;
             }
             
-            let (operand, new_pos) = self.decode_operand(bytes, pos, instr, *enc)?;
+            let (operand, new_pos) = self.decode_operand(bytes, pos, instr, *enc, modrm)?;
             instr.operands[i] = operand;
             instr.num_operands = (i + 1) as u8;
             pos = new_pos;
@@ -483,7 +494,7 @@ impl X86Decoder {
         Ok(pos)
     }
     
-    fn decode_operand(&self, bytes: &[u8], pos: usize, instr: &DecodedInstr, enc: OpEnc) -> JitResult<(Operand, usize)> {
+    fn decode_operand(&self, bytes: &[u8], pos: usize, instr: &DecodedInstr, enc: OpEnc, modrm: Option<u8>) -> JitResult<(Operand, usize)> {
         let mut pos = pos;
         
         let operand = match enc {
@@ -530,6 +541,47 @@ impl X86Decoder {
                 Operand::Imm(imm)
             }
             
+            OpEnc::ImmV => {
+                // Immediate size depends on operand size
+                let size = self.get_operand_size(instr);
+                match size {
+                    2 => {
+                        let imm = u16::from_le_bytes([
+                            bytes.get(pos).copied().unwrap_or(0),
+                            bytes.get(pos + 1).copied().unwrap_or(0),
+                        ]) as i16 as i64;
+                        pos += 2;
+                        Operand::Imm(imm)
+                    }
+                    8 if instr.prefixes.rex_w => {
+                        // 64-bit immediate only with REX.W
+                        let imm = i64::from_le_bytes([
+                            bytes.get(pos).copied().unwrap_or(0),
+                            bytes.get(pos + 1).copied().unwrap_or(0),
+                            bytes.get(pos + 2).copied().unwrap_or(0),
+                            bytes.get(pos + 3).copied().unwrap_or(0),
+                            bytes.get(pos + 4).copied().unwrap_or(0),
+                            bytes.get(pos + 5).copied().unwrap_or(0),
+                            bytes.get(pos + 6).copied().unwrap_or(0),
+                            bytes.get(pos + 7).copied().unwrap_or(0),
+                        ]);
+                        pos += 8;
+                        Operand::Imm(imm)
+                    }
+                    _ => {
+                        // Default to 32-bit
+                        let imm = i32::from_le_bytes([
+                            bytes.get(pos).copied().unwrap_or(0),
+                            bytes.get(pos + 1).copied().unwrap_or(0),
+                            bytes.get(pos + 2).copied().unwrap_or(0),
+                            bytes.get(pos + 3).copied().unwrap_or(0),
+                        ]) as i64;
+                        pos += 4;
+                        Operand::Imm(imm)
+                    }
+                }
+            }
+            
             OpEnc::Rel8 => {
                 let rel = bytes.get(pos).copied().unwrap_or(0) as i8 as i64;
                 pos += 1;
@@ -547,6 +599,36 @@ impl X86Decoder {
                 Operand::Rel(rel)
             }
             
+            OpEnc::FarPtr16 => {
+                // ptr16:16 - offset (16-bit) followed by segment (16-bit)
+                let offset = u16::from_le_bytes([
+                    bytes.get(pos).copied().unwrap_or(0),
+                    bytes.get(pos + 1).copied().unwrap_or(0),
+                ]) as u64;
+                let segment = u16::from_le_bytes([
+                    bytes.get(pos + 2).copied().unwrap_or(0),
+                    bytes.get(pos + 3).copied().unwrap_or(0),
+                ]) as u16;
+                pos += 4;
+                Operand::Far { seg: segment, off: offset }
+            }
+            
+            OpEnc::FarPtr32 => {
+                // ptr16:32 - offset (32-bit) followed by segment (16-bit)
+                let offset = u32::from_le_bytes([
+                    bytes.get(pos).copied().unwrap_or(0),
+                    bytes.get(pos + 1).copied().unwrap_or(0),
+                    bytes.get(pos + 2).copied().unwrap_or(0),
+                    bytes.get(pos + 3).copied().unwrap_or(0),
+                ]) as u64;
+                let segment = u16::from_le_bytes([
+                    bytes.get(pos + 4).copied().unwrap_or(0),
+                    bytes.get(pos + 5).copied().unwrap_or(0),
+                ]) as u16;
+                pos += 6;
+                Operand::Far { seg: segment, off: offset }
+            }
+            
             OpEnc::RegAx => {
                 let size = self.get_operand_size(instr);
                 Operand::Reg(Register { kind: RegKind::Gpr, index: 0, size })
@@ -559,12 +641,19 @@ impl X86Decoder {
             }
             
             OpEnc::ModRm | OpEnc::ModRmReg => {
-                let modrm = bytes.get(pos).copied().unwrap_or(0);
-                pos += 1;
+                let modrm = modrm.unwrap_or(0);
                 
                 let (operand, new_pos) = self.decode_modrm(bytes, pos, instr, modrm, enc == OpEnc::ModRmReg)?;
                 pos = new_pos;
                 operand
+            }
+            
+            OpEnc::SegRegModRm => {
+                // Segment register from ModR/M reg field
+                let modrm = modrm.unwrap_or(0);
+                let reg = (modrm >> 3) & 0x07;
+                // Segment registers: ES=0, CS=1, SS=2, DS=3, FS=4, GS=5
+                Operand::Reg(Register { kind: RegKind::Segment, index: reg, size: 2 })
             }
             
             _ => Operand::None,
@@ -598,13 +687,18 @@ impl X86Decoder {
         mem.size = size;
         mem.segment = instr.prefixes.segment;
         
+        // 16-bit Real Mode uses completely different ModR/M encoding
+        if self.mode == CpuMode::Real {
+            return self.decode_modrm_16bit(bytes, pos, instr, modrm);
+        }
+        
         let addr_size = if instr.prefixes.addr_size {
             if self.mode == CpuMode::Long { 4 } else { 2 }
         } else {
             if self.mode == CpuMode::Long { 8 } else { 4 }
         };
         
-        if rm == 0b100 && self.mode != CpuMode::Real {
+        if rm == 0b100 {
             // SIB byte follows
             let sib = bytes.get(pos).copied().unwrap_or(0);
             pos += 1;
@@ -687,6 +781,101 @@ impl X86Decoder {
         Ok((Operand::Mem(mem), pos))
     }
     
+    /// Decode 16-bit ModR/M addressing (Real Mode)
+    /// 16-bit ModR/M has completely different encoding than 32/64-bit
+    fn decode_modrm_16bit(&self, bytes: &[u8], mut pos: usize, instr: &DecodedInstr, modrm: u8) -> JitResult<(Operand, usize)> {
+        let mode = (modrm >> 6) & 0x03;
+        let rm = modrm & 0x07;
+        
+        let size = self.get_operand_size(instr);
+        let mut mem = MemOp::default();
+        mem.size = size;
+        mem.segment = instr.prefixes.segment;
+        
+        // 16-bit addressing modes
+        // mod=00:
+        //   rm=000: [BX+SI], rm=001: [BX+DI], rm=010: [BP+SI], rm=011: [BP+DI]
+        //   rm=100: [SI], rm=101: [DI], rm=110: [disp16], rm=111: [BX]
+        // mod=01: same as 00 but + disp8
+        // mod=10: same as 00 but + disp16
+        // mod=11: register
+        
+        match rm {
+            0b000 => { // [BX+SI]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 3, size: 2 }); // BX
+                mem.index = Some(Register { kind: RegKind::Gpr, index: 6, size: 2 }); // SI
+            }
+            0b001 => { // [BX+DI]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 3, size: 2 }); // BX
+                mem.index = Some(Register { kind: RegKind::Gpr, index: 7, size: 2 }); // DI
+            }
+            0b010 => { // [BP+SI]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 5, size: 2 }); // BP
+                mem.index = Some(Register { kind: RegKind::Gpr, index: 6, size: 2 }); // SI
+                if mem.segment == Segment::None {
+                    mem.segment = Segment::SS; // BP default to SS
+                }
+            }
+            0b011 => { // [BP+DI]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 5, size: 2 }); // BP
+                mem.index = Some(Register { kind: RegKind::Gpr, index: 7, size: 2 }); // DI
+                if mem.segment == Segment::None {
+                    mem.segment = Segment::SS;
+                }
+            }
+            0b100 => { // [SI]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 6, size: 2 }); // SI
+            }
+            0b101 => { // [DI]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 7, size: 2 }); // DI
+            }
+            0b110 => {
+                if mode == 0b00 {
+                    // [disp16] - direct address, no base register
+                    let disp = u16::from_le_bytes([
+                        bytes.get(pos).copied().unwrap_or(0),
+                        bytes.get(pos + 1).copied().unwrap_or(0),
+                    ]) as i16 as i64;
+                    pos += 2;
+                    mem.disp = disp;
+                    // No base register for direct addressing
+                    return Ok((Operand::Mem(mem), pos));
+                } else {
+                    // [BP+disp]
+                    mem.base = Some(Register { kind: RegKind::Gpr, index: 5, size: 2 }); // BP
+                    if mem.segment == Segment::None {
+                        mem.segment = Segment::SS;
+                    }
+                }
+            }
+            0b111 => { // [BX]
+                mem.base = Some(Register { kind: RegKind::Gpr, index: 3, size: 2 }); // BX
+            }
+            _ => unreachable!(),
+        }
+        
+        // Displacement based on mod
+        match mode {
+            0b00 => { /* No displacement except for rm=110 handled above */ }
+            0b01 => {
+                // disp8, sign-extended
+                mem.disp = bytes.get(pos).copied().unwrap_or(0) as i8 as i64;
+                pos += 1;
+            }
+            0b10 => {
+                // disp16
+                mem.disp = u16::from_le_bytes([
+                    bytes.get(pos).copied().unwrap_or(0),
+                    bytes.get(pos + 1).copied().unwrap_or(0),
+                ]) as i16 as i64;
+                pos += 2;
+            }
+            _ => {} // 0b11 should not reach here (handled in caller)
+        }
+        
+        Ok((Operand::Mem(mem), pos))
+    }
+    
     fn get_operand_size(&self, instr: &DecodedInstr) -> u8 {
         if instr.prefixes.rex_w {
             8
@@ -722,6 +911,8 @@ impl X86Decoder {
             0x84..=0x85 => Mnemonic::Test,
             0x86..=0x87 => Mnemonic::Xchg,
             0x88..=0x8B => Mnemonic::Mov,
+            0x8C => Mnemonic::Mov, // MOV r/m16, Sreg
+            0x8E => Mnemonic::Mov, // MOV Sreg, r/m16
             0x8D => Mnemonic::Lea,
             0x90 => if prefixes.rep { Mnemonic::Pause } else { Mnemonic::Nop },
             0x91..=0x97 => Mnemonic::Xchg,
@@ -752,6 +943,7 @@ impl X86Decoder {
             0xE4..=0xE7 => Mnemonic::In, // or Out
             0xE8 => Mnemonic::Call,
             0xE9..=0xEB => Mnemonic::Jmp,
+            0xEA => Mnemonic::Jmp, // JMP FAR ptr16:16/ptr16:32
             0xEC..=0xEF => Mnemonic::In, // or Out
             0xF4 => Mnemonic::Hlt,
             0xF5 => Mnemonic::Cmc,
@@ -821,23 +1013,60 @@ impl X86Decoder {
     fn get_operand_encoding(&self, opcode: u32, _prefixes: &Prefixes) -> [OpEnc; 4] {
         // Simplified - real implementation needs full opcode tables
         match opcode {
+            // ADD/OR/ADC/SBB/AND/SUB/XOR/CMP r/m8, r8 and r8, r/m8
             0x00..=0x03 => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
             0x04 => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
             0x05 => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // OR
+            0x08..=0x0B => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x0C => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x0D => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // ADC
+            0x10..=0x13 => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x14 => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x15 => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // SBB
+            0x18..=0x1B => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x1C => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x1D => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // AND
+            0x20..=0x23 => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x24 => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x25 => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // SUB
+            0x28..=0x2B => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x2C => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x2D => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // XOR
+            0x30..=0x33 => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x34 => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x35 => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            // CMP
+            0x38..=0x3B => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x3C => [OpEnc::RegAx, OpEnc::Imm8, OpEnc::None, OpEnc::None],
+            0x3D => [OpEnc::RegAx, OpEnc::Imm32, OpEnc::None, OpEnc::None],
+            
             0x50..=0x57 => [OpEnc::RegOp, OpEnc::None, OpEnc::None, OpEnc::None],
             0x58..=0x5F => [OpEnc::RegOp, OpEnc::None, OpEnc::None, OpEnc::None],
             0x68 => [OpEnc::Imm32, OpEnc::None, OpEnc::None, OpEnc::None],
             0x6A => [OpEnc::Imm8, OpEnc::None, OpEnc::None, OpEnc::None],
             0x70..=0x7F => [OpEnc::Rel8, OpEnc::None, OpEnc::None, OpEnc::None],
             0x88..=0x8B => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None],
+            0x8C => [OpEnc::ModRm, OpEnc::SegRegModRm, OpEnc::None, OpEnc::None], // MOV r/m16, Sreg
+            0x8E => [OpEnc::SegRegModRm, OpEnc::ModRm, OpEnc::None, OpEnc::None], // MOV Sreg, r/m16
             0x8D => [OpEnc::ModRmReg, OpEnc::ModRm, OpEnc::None, OpEnc::None],
             0xB0..=0xB7 => [OpEnc::RegOp, OpEnc::Imm8, OpEnc::None, OpEnc::None],
-            0xB8..=0xBF => [OpEnc::RegOp, OpEnc::Imm32, OpEnc::None, OpEnc::None], // or Imm64 with REX.W
+            0xB8..=0xBF => [OpEnc::RegOp, OpEnc::ImmV, OpEnc::None, OpEnc::None], // MOV r16/32/64, imm
             0xC3 => [OpEnc::None, OpEnc::None, OpEnc::None, OpEnc::None],
             0xCD => [OpEnc::Imm8, OpEnc::None, OpEnc::None, OpEnc::None],
             0xE8 => [OpEnc::Rel32, OpEnc::None, OpEnc::None, OpEnc::None],
             0xE9 => [OpEnc::Rel32, OpEnc::None, OpEnc::None, OpEnc::None],
+            0xEA => [OpEnc::FarPtr16, OpEnc::None, OpEnc::None, OpEnc::None], // JMP FAR ptr16:16
             0xEB => [OpEnc::Rel8, OpEnc::None, OpEnc::None, OpEnc::None],
+            // Two-byte opcodes
+            0x0F01 => [OpEnc::ModRm, OpEnc::None, OpEnc::None, OpEnc::None], // LGDT/LIDT/etc m
+            0x0F20 => [OpEnc::ModRmReg, OpEnc::ModRm, OpEnc::None, OpEnc::None], // MOV r64, CRn
+            0x0F22 => [OpEnc::ModRm, OpEnc::ModRmReg, OpEnc::None, OpEnc::None], // MOV CRn, r64
             0x0F80..=0x0F8F => [OpEnc::Rel32, OpEnc::None, OpEnc::None, OpEnc::None],
             _ => [OpEnc::None, OpEnc::None, OpEnc::None, OpEnc::None],
         }
@@ -884,6 +1113,7 @@ enum OpEnc {
     None,
     Imm8,
     Imm16,
+    ImmV,  // Immediate size depends on operand size (16/32/64)
     Imm32,
     Imm64,
     Rel8,
@@ -892,6 +1122,9 @@ enum OpEnc {
     RegOp,
     ModRm,
     ModRmReg,
+    SegRegModRm, // Segment register from ModR/M reg field (for 8C/8E)
+    FarPtr16,  // ptr16:16 (segment:offset) for real mode JMP FAR
+    FarPtr32,  // ptr16:32 (segment:offset) for protected mode JMP FAR
 }
 
 impl Default for X86Decoder {

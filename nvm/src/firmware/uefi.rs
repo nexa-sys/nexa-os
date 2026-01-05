@@ -607,66 +607,162 @@ impl Firmware for UefiFirmware {
             ));
         }
         
-        // =========== Phase 1: Setup 64-bit long mode page tables ===========
+        // =========== Phase 1: Setup page tables (will be used after mode switch) ===========
         self.init_page_tables(memory)?;
         
-        // =========== Phase 2: Setup GDT for 64-bit mode ===========
+        // =========== Phase 2: Setup GDT ===========
         self.init_gdt(memory)?;
         
         // =========== Phase 3: Initialize UEFI tables ===========
-        let system_table_addr = self.init_uefi_tables(memory)?;
+        let _system_table_addr = self.init_uefi_tables(memory)?;
         
-        // =========== Phase 4: Create UEFI entry stub ===========
-        let entry_addr = 0x80000u64;
+        // =========== Phase 4: Create UEFI SEC/PEI/DXE bootstrap code ===========
+        // Real UEFI starts in 16-bit real mode at reset vector (0xFFFF0)
+        // and transitions: Real Mode -> Protected Mode -> Long Mode
         
-        // 64-bit UEFI entry code with proper calling convention
-        // RCX = ImageHandle, RDX = SystemTable pointer
-        let entry_code: &[u8] = &[
-            // Entry point - UEFI application entry
-            0x48, 0x89, 0xD3,             // MOV RBX, RDX (save SystemTable)
-            0x48, 0x89, 0xCF,             // MOV RDI, RCX (save ImageHandle)
-            
-            // Display boot message via ConOut->OutputString (simplified)
-            // For now, just indicate successful entry
-            
-            0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, // MOV RAX, 0 (EFI_SUCCESS)
-            
-            // Wait for boot loader to be loaded
-            // In real UEFI, this would transfer to the EFI boot manager
-            0xF4,                          // HLT
-            0xEB, 0xFD,                    // JMP -3
+        // Reset vector at 0xFFFF0 (jumps to SEC entry)
+        let reset_vector: &[u8] = &[
+            0xEA, 0x00, 0x70, 0x00, 0xF0,  // JMP FAR F000:7000 (SEC entry)
         ];
-        
-        let entry_addr_usize = entry_addr as usize;
-        if entry_addr_usize + entry_code.len() < memory.len() {
-            memory[entry_addr_usize..entry_addr_usize + entry_code.len()]
-                .copy_from_slice(entry_code);
+        let reset_addr = 0xFFFF0usize;
+        if reset_addr + reset_vector.len() <= memory.len() {
+            memory[reset_addr..reset_addr + reset_vector.len()].copy_from_slice(reset_vector);
         }
         
-        // =========== Phase 5: Initialize framebuffer ===========
-        // Note: Framebuffer at 0xFD000000 requires special MMIO handling
-        // For VGA text mode compatibility, also init VGA buffer
+        // SEC Phase at F000:7000 (linear 0xF7000) - 16-bit real mode code
+        // Initializes basic environment, then jumps to PEI
+        let sec_code: &[u8] = &[
+            // ---- SEC Phase: 16-bit Real Mode ----
+            // CLI - disable interrupts
+            0xFA,
+            // Set up segments for real mode
+            0x31, 0xC0,                   // XOR AX, AX
+            0x8E, 0xD8,                   // MOV DS, AX
+            0x8E, 0xC0,                   // MOV ES, AX
+            0x8E, 0xD0,                   // MOV SS, AX
+            0xBC, 0x00, 0x7C,             // MOV SP, 0x7C00
+            
+            // ---- PEI Phase: Switch to 32-bit Protected Mode ----
+            // Load GDT (GDT at 0x80000)
+            0x0F, 0x01, 0x16, 0x50, 0x70, // LGDT [0x7050] (GDT descriptor)
+            
+            // Enable Protected Mode (set CR0.PE)
+            0x0F, 0x20, 0xC0,             // MOV EAX, CR0
+            0x0C, 0x01,                   // OR AL, 1
+            0x0F, 0x22, 0xC0,             // MOV CR0, EAX
+            
+            // Far jump to 32-bit code (flush pipeline, load CS with 32-bit selector)
+            0x66, 0xEA,                   // JMP FAR (32-bit)
+            0x30, 0x70, 0x00, 0x00,       // Offset: 0x7030
+            0x08, 0x00,                   // Selector: 0x08 (32-bit code)
+        ];
+        let sec_addr = 0xF7000usize;
+        if sec_addr + sec_code.len() <= memory.len() {
+            memory[sec_addr..sec_addr + sec_code.len()].copy_from_slice(sec_code);
+        }
+        
+        // GDT descriptor at 0x7050 (used by LGDT in real mode)
+        let gdt_desc: &[u8] = &[
+            0x2F, 0x00,                   // Limit: 47 (6 entries * 8 - 1)
+            0x00, 0x00, 0x08, 0x00,       // Base: 0x80000
+        ];
+        memory[0x7050..0x7050 + gdt_desc.len()].copy_from_slice(gdt_desc);
+        
+        // 32-bit protected mode code at 0x7030
+        // This is PEI -> DXE transition: switch from 32-bit to 64-bit
+        let pei_code: &[u8] = &[
+            // ---- 32-bit Protected Mode ----
+            // Set up 32-bit segments
+            0x66, 0xB8, 0x10, 0x00,       // MOV AX, 0x10 (32-bit data selector)
+            0x8E, 0xD8,                   // MOV DS, AX
+            0x8E, 0xC0,                   // MOV ES, AX
+            0x8E, 0xD0,                   // MOV SS, AX
+            0x8E, 0xE0,                   // MOV FS, AX
+            0x8E, 0xE8,                   // MOV GS, AX
+            
+            // ---- DXE Phase: Switch to 64-bit Long Mode ----
+            // Enable PAE in CR4
+            0x0F, 0x20, 0xE0,             // MOV EAX, CR4
+            0x0D, 0x20, 0x00, 0x00, 0x00, // OR EAX, 0x20 (PAE)
+            0x0F, 0x22, 0xE0,             // MOV CR4, EAX
+            
+            // Load CR3 with PML4 address (page tables at 0x100000)
+            0xB8, 0x00, 0x00, 0x10, 0x00, // MOV EAX, 0x100000
+            0x0F, 0x22, 0xD8,             // MOV CR3, EAX
+            
+            // Enable Long Mode in EFER MSR
+            0xB9, 0x80, 0x00, 0x00, 0xC0, // MOV ECX, 0xC0000080 (IA32_EFER)
+            0x0F, 0x32,                   // RDMSR
+            0x0D, 0x00, 0x01, 0x00, 0x00, // OR EAX, 0x100 (LME)
+            0x0F, 0x30,                   // WRMSR
+            
+            // Enable Paging (CR0.PG) - this activates Long Mode
+            0x0F, 0x20, 0xC0,             // MOV EAX, CR0
+            0x0D, 0x00, 0x00, 0x00, 0x80, // OR EAX, 0x80000000 (PG)
+            0x0F, 0x22, 0xC0,             // MOV CR0, EAX
+            
+            // Far jump to 64-bit code
+            0xEA,                         // JMP FAR
+            0x00, 0x71, 0x00, 0x00,       // Offset: 0x7100
+            0x18, 0x00,                   // Selector: 0x18 (64-bit code)
+        ];
+        let pei_addr = 0x7030usize;
+        if pei_addr + pei_code.len() <= memory.len() {
+            memory[pei_addr..pei_addr + pei_code.len()].copy_from_slice(pei_code);
+        }
+        
+        // 64-bit DXE code at 0x7100
+        let dxe_code: &[u8] = &[
+            // ---- 64-bit Long Mode (DXE) ----
+            // Set up 64-bit segments
+            0x48, 0x31, 0xC0,             // XOR RAX, RAX
+            0x8E, 0xD8,                   // MOV DS, AX
+            0x8E, 0xC0,                   // MOV ES, AX
+            0x8E, 0xD0,                   // MOV SS, AX
+            
+            // Set up stack
+            0x48, 0xBC,                   // MOV RSP, imm64
+            0x00, 0x7C, 0x00, 0x00,       // 0x7C00
+            0x00, 0x00, 0x00, 0x00,
+            
+            // Display "UEFI" on screen (VGA text at 0xB8000)
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x00, 0x80, 0x0B, 0x00,       // 0xB8000
+            0x00, 0x00, 0x00, 0x00,
+            0xB8, 0x55, 0x1F,             // MOV AX, 0x1F55 ('U' white on blue)
+            0x66, 0x89, 0x07,             // MOV [RDI], AX
+            0xB8, 0x45, 0x1F,             // MOV AX, 0x1F45 ('E')
+            0x66, 0x89, 0x47, 0x02,       // MOV [RDI+2], AX
+            0xB8, 0x46, 0x1F,             // MOV AX, 0x1F46 ('F')
+            0x66, 0x89, 0x47, 0x04,       // MOV [RDI+4], AX
+            0xB8, 0x49, 0x1F,             // MOV AX, 0x1F49 ('I')
+            0x66, 0x89, 0x47, 0x06,       // MOV [RDI+6], AX
+            
+            // HLT loop (wait for boot device)
+            0xF4,                         // HLT
+            0xEB, 0xFD,                   // JMP -3
+        ];
+        let dxe_addr = 0x7100usize;
+        if dxe_addr + dxe_code.len() <= memory.len() {
+            memory[dxe_addr..dxe_addr + dxe_code.len()].copy_from_slice(dxe_code);
+        }
+        
+        // =========== Phase 5: Initialize VGA buffer ===========
         let vga_base = 0xB8000usize;
         if vga_base + 0x1000 < memory.len() {
             // Clear VGA text buffer
             for i in 0..(80 * 25) {
                 memory[vga_base + i * 2] = b' ';
-                memory[vga_base + i * 2 + 1] = 0x1F;  // White on blue (UEFI style)
-            }
-            // Display UEFI boot message
-            let msg = b"NexaUEFI v1.0 Enterprise - Initializing...";
-            for (i, &ch) in msg.iter().enumerate() {
-                memory[vga_base + i * 2] = ch;
-                memory[vga_base + i * 2 + 1] = 0x1F;
+                memory[vga_base + i * 2 + 1] = 0x1F;  // White on blue
             }
         }
         
-        // Return entry point (64-bit mode)
+        // Return entry point: CPU starts in 16-bit real mode at reset vector
         Ok(FirmwareLoadResult {
-            entry_point: entry_addr,
-            stack_pointer: 0x7C000,
-            code_segment: 0x08,  // 64-bit code segment
-            real_mode: false,
+            entry_point: 0xFFFF0,         // Reset vector (real mode)
+            stack_pointer: 0x7C00,
+            code_segment: 0xF000,         // Real mode segment
+            real_mode: true,              // Start in real mode!
         })
     }
     

@@ -450,8 +450,16 @@ pub struct PerformanceCounters {
     pub perf_global_status: u64,
 }
 
-/// Full CPU state (complete snapshot for save/restore)
-#[derive(Debug, Clone)]
+/// Descriptor Table Register (GDTR/IDTR)
+#[derive(Debug, Clone, Default)]
+pub struct DescriptorTableRegister {
+    /// Limit (size - 1) of the table
+    pub limit: u16,
+    /// Linear base address of the table
+    pub base: u64,
+}
+
+#[derive(Clone)]
 pub struct CpuState {
     pub regs: Registers,
     pub segments: SegmentRegisters,
@@ -471,6 +479,10 @@ pub struct CpuState {
     pub pending_interrupts: VecDeque<PendingInterrupt>,
     /// Single-step mode enabled
     pub single_step: bool,
+    /// Global Descriptor Table Register
+    pub gdtr: DescriptorTableRegister,
+    /// Interrupt Descriptor Table Register
+    pub idtr: DescriptorTableRegister,
 }
 
 impl Default for CpuState {
@@ -497,6 +509,8 @@ impl Default for CpuState {
             pending_exception: None,
             pending_interrupts: VecDeque::new(),
             single_step: false,
+            gdtr: DescriptorTableRegister::default(),
+            idtr: DescriptorTableRegister::default(),
         }
     }
 }
@@ -949,6 +963,49 @@ impl VirtualCpu {
             SegmentRegister::Gs => state.segments.gs.selector = selector,
             SegmentRegister::Ss => state.segments.ss.selector = selector,
         }
+    }
+    
+    /// Read segment selector
+    pub fn read_segment_selector(&self, seg: SegmentRegister) -> u16 {
+        let state = self.state.read().unwrap();
+        match seg {
+            SegmentRegister::Cs => state.segments.cs.selector,
+            SegmentRegister::Ds => state.segments.ds.selector,
+            SegmentRegister::Es => state.segments.es.selector,
+            SegmentRegister::Fs => state.segments.fs.selector,
+            SegmentRegister::Gs => state.segments.gs.selector,
+            SegmentRegister::Ss => state.segments.ss.selector,
+        }
+    }
+    
+    // ========================================================================
+    // Descriptor Table Register Operations (GDTR/IDTR)
+    // ========================================================================
+    
+    /// Set GDTR (Global Descriptor Table Register)
+    pub fn set_gdtr(&self, limit: u16, base: u64) {
+        let mut state = self.state.write().unwrap();
+        state.gdtr.limit = limit;
+        state.gdtr.base = base;
+    }
+    
+    /// Get GDTR
+    pub fn get_gdtr(&self) -> (u16, u64) {
+        let state = self.state.read().unwrap();
+        (state.gdtr.limit, state.gdtr.base)
+    }
+    
+    /// Set IDTR (Interrupt Descriptor Table Register)
+    pub fn set_idtr(&self, limit: u16, base: u64) {
+        let mut state = self.state.write().unwrap();
+        state.idtr.limit = limit;
+        state.idtr.base = base;
+    }
+    
+    /// Get IDTR
+    pub fn get_idtr(&self) -> (u16, u64) {
+        let state = self.state.read().unwrap();
+        (state.idtr.limit, state.idtr.base)
     }
     
     // ========================================================================

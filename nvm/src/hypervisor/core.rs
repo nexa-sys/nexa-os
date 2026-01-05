@@ -1522,6 +1522,20 @@ impl VmInstance {
         // Load firmware into guest memory and get boot context
         let boot_context = self.load_firmware_to_memory(address_space.ram())?;
         
+        // Sync VGA text buffer from firmware-initialized RAM
+        // Firmware writes directly to RAM at 0xB8000, but now MMIO routes this to VGA.
+        // We need to copy what firmware wrote to VGA's text_buffer.
+        {
+            const VGA_TEXT_BASE: u64 = 0xB8000;
+            const VGA_TEXT_SIZE: usize = 80 * 25 * 2;  // 4000 bytes
+            let mut vga = self.vga.write().unwrap();
+            for i in 0..VGA_TEXT_SIZE {
+                let byte = address_space.ram().read_u8(VGA_TEXT_BASE + i as u64);
+                vga.write_vram_byte(i, byte);
+            }
+            log::info!("[VM] Synced VGA text buffer from firmware ({} bytes)", VGA_TEXT_SIZE);
+        }
+        
         // Create vCPUs and initialize BSP with boot context
         let mut vcpus = Vec::new();
         for i in 0..self.spec.vcpus {
@@ -1586,8 +1600,8 @@ impl VmInstance {
                     iter_count += 1;
                     
                     // Log every 1000 iterations for debugging
-                    if iter_count % 10000 == 0 {
-                        log::debug!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
+                    if iter_count % 1000 == 0 {
+                        log::info!("[JIT] Loop iteration {}, RIP={:#x}", iter_count, bsp.read_rip());
                     }
                     
                     // Check if CPU is halted (waiting for interrupt)
@@ -1603,6 +1617,8 @@ impl VmInstance {
                             use crate::jit::ExecuteResult;
                             match result {
                                 ExecuteResult::Continue { next_rip } => {
+                                    // Update RIP for next iteration
+                                    bsp.write_rip(next_rip);
                                     // Log first few iterations
                                     if iter_count <= 10 {
                                         log::info!("[JIT] Continue: next_rip={:#x}", next_rip);

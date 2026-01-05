@@ -381,25 +381,25 @@ impl FirmwareManager {
                 }
             }
             FirmwareType::Uefi | FirmwareType::UefiSecure => {
-                // 64-bit long mode boot context
+                // UEFI starts in real mode at reset vector, just like BIOS
+                // The firmware code itself handles the transition:
+                // Real Mode (SEC) -> Protected Mode (PEI) -> Long Mode (DXE)
                 FirmwareBootContext {
-                    entry_point: result.entry_point,
+                    entry_point: result.entry_point,  // 0xFFFF0 (reset vector)
                     stack_pointer: result.stack_pointer,
-                    code_segment: 0x08,  // 64-bit code segment selector
-                    data_segment: 0x10,  // 64-bit data segment selector
-                    real_mode: false,
-                    // Long mode CR0: PE + PG + ET + NE + WP + AM
-                    cr0: 0x8005_0033,
-                    cr3: 0x0010_0000,  // Page tables at 1MB
-                    // CR4: PAE + PGE + OSFXSR + OSXMMEXCPT + OSXSAVE
-                    cr4: 0x0000_06A0,
-                    // EFER: LME + LMA + SCE + NXE
-                    efer: 0x0000_0D01,
-                    rflags: 0x0000_0202,  // Reserved bit 1 + IF (enable interrupts)
-                    gdt_base: 0x0008_0000,  // GDT at 512KB
-                    gdt_limit: 0x2F,        // 6 entries (null + code64 + data64 + code32 + data32 + tss)
-                    idt_base: 0x0008_1000,  // IDT at 512KB + 4KB
-                    idt_limit: 0x0FFF,      // 256 entries * 16 bytes
+                    code_segment: result.code_segment, // 0xF000 (real mode)
+                    data_segment: 0x0000,
+                    real_mode: result.real_mode,       // true - starts in real mode
+                    // Real mode CR0: no paging, no protected mode
+                    cr0: 0x0000_0010,  // ET bit only
+                    cr3: 0,
+                    cr4: 0,
+                    efer: 0,
+                    rflags: 0x0000_0002,  // Reserved bit 1
+                    gdt_base: 0,
+                    gdt_limit: 0,
+                    idt_base: 0,
+                    idt_limit: 0x3FF,  // Real mode IVT
                 }
             }
         }

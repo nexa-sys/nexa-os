@@ -46,6 +46,12 @@ impl Interpreter {
             // Decode
             let instr = decoder.decode(&bytes, rip)?;
             
+            // Debug first few instructions
+            if executed < 30 {
+                log::info!("[Interp] RIP={:#x} mnemonic={:?} len={} bytes={:02x?}", 
+                          rip, instr.mnemonic, instr.len, &bytes[..instr.len as usize]);
+            }
+            
             // Execute
             let result = self.execute_instr(cpu, memory, &instr, profile)?;
             
@@ -53,6 +59,9 @@ impl Interpreter {
             
             match result {
                 InstrResult::Continue(next_rip) => {
+                    if executed <= 30 {
+                        log::info!("[Interp] Continue to {:#x}", next_rip);
+                    }
                     rip = next_rip;
                 }
                 InstrResult::Branch { taken, target, fallthrough } => {
@@ -190,9 +199,40 @@ impl Interpreter {
                 Ok(InstrResult::Continue(next_rip))
             }
             
+            // RDMSR: Read MSR[ECX] into EDX:EAX
+            Mnemonic::Rdmsr => {
+                let msr_addr = cpu.read_gpr(1) as u32; // ECX
+                let value = cpu.read_msr(msr_addr);
+                cpu.write_gpr(0, value & 0xFFFF_FFFF);  // EAX = low 32 bits
+                cpu.write_gpr(2, value >> 32);          // EDX = high 32 bits
+                log::debug!("[JIT] RDMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
+                Ok(InstrResult::Continue(next_rip))
+            }
+            
+            // WRMSR: Write EDX:EAX to MSR[ECX]
+            Mnemonic::Wrmsr => {
+                let msr_addr = cpu.read_gpr(1) as u32; // ECX
+                let eax = cpu.read_gpr(0) as u32;
+                let edx = cpu.read_gpr(2) as u32;
+                let value = ((edx as u64) << 32) | (eax as u64);
+                cpu.write_msr(msr_addr, value);
+                log::debug!("[JIT] WRMSR: MSR[{:#x}] = {:#x}", msr_addr, value);
+                Ok(InstrResult::Continue(next_rip))
+            }
+            
+            // System instructions - LGDT/LIDT load descriptor table registers
+            Mnemonic::Lgdt | Mnemonic::Lidt => {
+                self.exec_lgdt_lidt(cpu, memory, instr)
+            }
+            
             _ => {
-                // Unsupported - exit to handler
-                Ok(InstrResult::Exit(ExecuteResult::Continue { next_rip }))
+                // Unsupported instruction - log and return error instead of skipping
+                log::warn!("[JIT] Unsupported instruction {:?} at RIP={:#x}, len={}", 
+                          instr.mnemonic, instr.rip, instr.len);
+                Err(JitError::UnsupportedInstruction { 
+                    rip: instr.rip, 
+                    mnemonic: format!("{:?}", instr.mnemonic) 
+                })
             }
         }
     }
@@ -420,6 +460,16 @@ impl Interpreter {
             Operand::Rel(offset) => {
                 (instr.rip as i64 + instr.len as i64 + offset) as u64
             }
+            Operand::Far { seg, off } => {
+                // FAR JMP: segment:offset
+                // In real mode: linear = segment * 16 + offset
+                // In protected/long mode: segment is a selector, need to load CS
+                // For now, assume real mode
+                let linear = (*seg as u64) * 16 + *off;
+                // Update CS segment base
+                cpu.write_segment_base(crate::cpu::SegmentRegister::Cs, (*seg as u64) * 16);
+                linear
+            }
             _ => self.read_operand(cpu, memory, &instr.operands[0], instr)?,
         };
         Ok(InstrResult::Continue(target))
@@ -592,6 +642,67 @@ impl Interpreter {
         Ok(InstrResult::Continue(rip))
     }
     
+    /// Execute LGDT or LIDT instruction
+    /// 
+    /// LGDT/LIDT load the Global/Interrupt Descriptor Table Register from memory.
+    /// The memory operand contains:
+    /// - 16-bit mode: 2-byte limit + 3-byte base (5 bytes, but base is 24-bit, zero-extended)
+    /// - 32-bit mode: 2-byte limit + 4-byte base (6 bytes)
+    /// - 64-bit mode: 2-byte limit + 8-byte base (10 bytes)
+    fn exec_lgdt_lidt(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
+        let next_rip = instr.rip + instr.len as u64;
+        
+        // Get memory address from operand
+        let addr = match &instr.operands[0] {
+            Operand::Mem(m) => self.compute_ea(cpu, m, instr)?,
+            _ => {
+                log::error!("[JIT] LGDT/LIDT requires memory operand, got {:?}", instr.operands[0]);
+                return Err(JitError::UnsupportedInstruction {
+                    rip: instr.rip,
+                    mnemonic: format!("{:?}", instr.mnemonic),
+                });
+            }
+        };
+        
+        // Read limit (2 bytes, always)
+        let limit = memory.read_u16(addr);
+        
+        // Read base address - size depends on operand size (CPU mode)
+        // In 16-bit real mode: 24-bit (3 bytes), but we read 4 bytes and mask
+        // In 32-bit mode: 32-bit (4 bytes)
+        // In 64-bit mode: 64-bit (8 bytes)
+        let cr0 = cpu.read_cr0();
+        let is_protected = (cr0 & 1) != 0;
+        let efer = cpu.read_msr(0xC000_0080); // IA32_EFER
+        let is_long_mode = is_protected && (efer & 0x400) != 0; // LMA bit
+        
+        let base = if is_long_mode {
+            // 64-bit mode: 8-byte base
+            memory.read_u64(addr + 2)
+        } else if is_protected {
+            // 32-bit protected mode: 4-byte base
+            memory.read_u32(addr + 2) as u64
+        } else {
+            // 16-bit real mode: 24-bit base (stored as 3 bytes, we read 4 and mask)
+            memory.read_u32(addr + 2) as u64 & 0x00FF_FFFF
+        };
+        
+        // Update the appropriate register
+        match instr.mnemonic {
+            Mnemonic::Lgdt => {
+                log::info!("[JIT] LGDT: limit={:#x}, base={:#x} at RIP={:#x}", limit, base, instr.rip);
+                cpu.set_gdtr(limit, base);
+            }
+            Mnemonic::Lidt => {
+                log::info!("[JIT] LIDT: limit={:#x}, base={:#x} at RIP={:#x}", limit, base, instr.rip);
+                cpu.set_idtr(limit, base);
+            }
+            _ => unreachable!(),
+        }
+        
+        Ok(InstrResult::Continue(next_rip))
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
@@ -599,7 +710,23 @@ impl Interpreter {
     fn read_operand(&self, cpu: &VirtualCpu, memory: &AddressSpace, op: &Operand, instr: &DecodedInstr) -> JitResult<u64> {
         match op {
             Operand::None => Ok(0),
-            Operand::Reg(r) => self.read_reg(cpu, r),
+            Operand::Reg(r) => {
+                if r.kind == RegKind::Segment {
+                    // Map x86 segment encoding to SegmentRegister enum
+                    let seg = match r.index {
+                        0 => crate::cpu::SegmentRegister::Es,
+                        1 => crate::cpu::SegmentRegister::Cs,
+                        2 => crate::cpu::SegmentRegister::Ss,
+                        3 => crate::cpu::SegmentRegister::Ds,
+                        4 => crate::cpu::SegmentRegister::Fs,
+                        5 => crate::cpu::SegmentRegister::Gs,
+                        _ => return Ok(0),
+                    };
+                    Ok(cpu.read_segment_selector(seg) as u64)
+                } else {
+                    self.read_reg(cpu, r)
+                }
+            }
             Operand::Imm(v) => Ok(*v as u64),
             Operand::Mem(m) => self.read_mem(cpu, memory, m, instr),
             Operand::Rel(v) => Ok(*v as u64),
@@ -609,7 +736,32 @@ impl Interpreter {
     
     fn write_operand(&self, cpu: &VirtualCpu, memory: &AddressSpace, op: &Operand, value: u64, instr: &DecodedInstr) -> JitResult<()> {
         match op {
-            Operand::Reg(r) => self.write_reg_sized(cpu, r, value),
+            Operand::Reg(r) => {
+                if r.kind == RegKind::Segment {
+                    // Map x86 segment encoding to SegmentRegister enum
+                    // x86: ES=0, CS=1, SS=2, DS=3, FS=4, GS=5
+                    // enum: CS=0, DS=1, ES=2, FS=3, GS=4, SS=5
+                    let seg = match r.index {
+                        0 => crate::cpu::SegmentRegister::Es,
+                        1 => crate::cpu::SegmentRegister::Cs,
+                        2 => crate::cpu::SegmentRegister::Ss,
+                        3 => crate::cpu::SegmentRegister::Ds,
+                        4 => crate::cpu::SegmentRegister::Fs,
+                        5 => crate::cpu::SegmentRegister::Gs,
+                        _ => return Ok(()), // Invalid segment
+                    };
+                    cpu.write_segment_selector(seg, value as u16);
+                    // In real mode, base = selector * 16
+                    let cr0 = cpu.read_cr0();
+                    if (cr0 & 1) == 0 {
+                        // Real mode: base = selector * 16
+                        cpu.write_segment_base(seg, (value as u64) * 16);
+                    }
+                    Ok(())
+                } else {
+                    self.write_reg_sized(cpu, r, value)
+                }
+            }
             Operand::Mem(m) => self.write_mem(cpu, memory, m, value, instr),
             _ => Ok(()),
         }
