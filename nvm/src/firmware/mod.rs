@@ -49,7 +49,10 @@ pub mod smbios;
 pub use bios::{Bios, BiosConfig, BiosServices};
 pub use uefi::{UefiFirmware, UefiConfig, UefiBootServices, UefiRuntimeServices};
 pub use font::{VgaFont, get_vga_font, FONT_WIDTH, FONT_HEIGHT};
-pub use manager::{FirmwareManager, FirmwareBootContext, FirmwareState, BootPhase, BootMenuState, SetupKey};
+pub use manager::{
+    FirmwareManager, FirmwareBootContext, FirmwareState, BootPhase, BootMenuState, SetupKey,
+    UefiBootUiCallback,
+};
 pub use acpi::{AcpiConfig, AcpiTableGenerator, Rsdp, Fadt, Facs, MadtBuilder, DsdtBuilder};
 pub use smbios::{SmbiosConfig, SmbiosGenerator, Smbios2EntryPoint, Smbios3EntryPoint};
 

@@ -34,30 +34,96 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashMap;
 
 /// Boot phase in the firmware lifecycle
+/// 
+/// Aligned with UEFI PI specification phases:
+/// - SEC (Security): Trust root establishment, CAR (Cache-as-RAM)
+/// - PEI (Pre-EFI Initialization): Memory discovery, chipset init
+/// - DXE (Driver Execution Environment): Driver loading, protocol installation
+/// - BDS (Boot Device Selection): Boot menu, OS loader selection
+/// - RT (Runtime): OS running, UEFI runtime services only
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootPhase {
-    /// Initial state after power-on/reset
+    // ==================== UEFI SEC Phase ====================
+    /// Initial state after power-on/reset (CPU at reset vector 0xFFFF0)
     Reset,
-    /// Power-On Self-Test in progress
-    PostInProgress,
-    /// POST completed successfully
-    PostComplete,
-    /// Initializing boot devices
-    InitDevices,
-    /// Waiting for user input (F2/DEL to enter setup)
-    WaitingForSetupKey,
-    /// Entering BIOS/UEFI setup menu
-    SetupMenu,
-    /// Selecting boot device
-    BootSelect,
-    /// Loading boot loader/OS
-    Loading,
-    /// Boot handoff complete, OS running
-    Running,
-    /// No bootable device - show error and enter setup
+    /// SEC: CPU initialization, CAR setup (16-bit real mode)
+    SecCpuInit,
+    /// SEC: Trust root validation (Secure Boot key verification)
+    SecTrustRoot,
+    
+    // ==================== UEFI PEI Phase ====================
+    /// PEI: Entering protected mode, GDT/IDT setup
+    PeiProtectedMode,
+    /// PEI: Memory controller initialization
+    PeiMemoryInit,
+    /// PEI: Memory discovery and testing
+    PeiMemoryDiscovery,
+    /// PEI: HOB (Hand-Off Block) list creation
+    PeiHobCreation,
+    
+    // ==================== UEFI DXE Phase ====================
+    /// DXE: Entering long mode (64-bit)
+    DxeLongMode,
+    /// DXE: Loading DXE dispatcher
+    DxeDispatcher,
+    /// DXE: Loading architectural protocols
+    DxeArchProtocols,
+    /// DXE: VGA/GOP initialization (UI visible from here)
+    DxeGopInit,
+    /// DXE: Loading platform drivers
+    DxePlatformDrivers,
+    /// DXE: Console initialization
+    DxeConsoleInit,
+    /// DXE: PCI enumeration
+    DxePciEnumeration,
+    /// DXE: Storage driver loading
+    DxeStorageDrivers,
+    /// DXE: Network driver loading
+    DxeNetworkDrivers,
+    
+    // ==================== UEFI BDS Phase ====================
+    /// BDS: Waiting for user input (F2/DEL/F12 timeout)
+    BdsWaitingForSetupKey,
+    /// BDS: Setup menu active
+    BdsSetupMenu,
+    /// BDS: Boot device enumeration
+    BdsDeviceEnumeration,
+    /// BDS: Boot device selection menu
+    BdsBootMenu,
+    /// BDS: Loading OS loader (BOOTX64.EFI)
+    BdsLoadingOsLoader,
+    /// BDS: ExitBootServices called - transition to RT
+    BdsExitBootServices,
+    
+    // ==================== UEFI RT Phase ====================
+    /// RT: OS running, only runtime services available
+    RtRunning,
+    /// RT: Runtime services SetVirtualAddressMap called
+    RtVirtualMode,
+    
+    // ==================== Error/Legacy States ====================
+    /// No bootable device found
     NoBootableDevice,
-    /// Boot failed
+    /// Boot failed with error
     Failed,
+    
+    // ==================== Legacy BIOS Compatibility ====================
+    /// Power-On Self-Test in progress (Legacy BIOS)
+    PostInProgress,
+    /// POST completed successfully (Legacy BIOS)
+    PostComplete,
+    /// Initializing boot devices (Legacy BIOS)
+    InitDevices,
+    /// Waiting for user input (Legacy BIOS)
+    WaitingForSetupKey,
+    /// BIOS/UEFI setup menu (Legacy BIOS)
+    SetupMenu,
+    /// Selecting boot device (Legacy BIOS)
+    BootSelect,
+    /// Loading boot loader/OS (Legacy BIOS)
+    Loading,
+    /// Boot handoff complete, OS running (Legacy BIOS)
+    Running,
 }
 
 /// Boot menu state for enterprise BIOS/UEFI setup
@@ -94,6 +160,115 @@ impl Default for BootPhase {
     }
 }
 
+impl BootPhase {
+    /// Get the UEFI PI specification phase name
+    pub fn uefi_phase_name(&self) -> &'static str {
+        match self {
+            Self::Reset | Self::SecCpuInit | Self::SecTrustRoot => "SEC",
+            Self::PeiProtectedMode | Self::PeiMemoryInit | 
+            Self::PeiMemoryDiscovery | Self::PeiHobCreation => "PEI",
+            Self::DxeLongMode | Self::DxeDispatcher | Self::DxeArchProtocols |
+            Self::DxeGopInit | Self::DxePlatformDrivers | Self::DxeConsoleInit |
+            Self::DxePciEnumeration | Self::DxeStorageDrivers | Self::DxeNetworkDrivers => "DXE",
+            Self::BdsWaitingForSetupKey | Self::BdsSetupMenu | Self::BdsDeviceEnumeration |
+            Self::BdsBootMenu | Self::BdsLoadingOsLoader | Self::BdsExitBootServices => "BDS",
+            Self::RtRunning | Self::RtVirtualMode => "RT",
+            Self::NoBootableDevice | Self::Failed => "ERROR",
+            // Legacy BIOS phases map to approximate UEFI equivalents
+            Self::PostInProgress | Self::PostComplete => "POST",
+            Self::InitDevices => "DXE",
+            Self::WaitingForSetupKey | Self::SetupMenu | Self::BootSelect => "BDS",
+            Self::Loading | Self::Running => "RT",
+        }
+    }
+    
+    /// Check if this phase supports UI display (GOP available)
+    pub fn has_ui_display(&self) -> bool {
+        matches!(self,
+            Self::DxeGopInit | Self::DxePlatformDrivers | Self::DxeConsoleInit |
+            Self::DxePciEnumeration | Self::DxeStorageDrivers | Self::DxeNetworkDrivers |
+            Self::BdsWaitingForSetupKey | Self::BdsSetupMenu | Self::BdsDeviceEnumeration |
+            Self::BdsBootMenu | Self::BdsLoadingOsLoader | Self::BdsExitBootServices |
+            Self::NoBootableDevice | Self::Failed |
+            // Legacy phases with display
+            Self::WaitingForSetupKey | Self::SetupMenu | Self::BootSelect | Self::Loading
+        )
+    }
+    
+    /// Check if this is a good point for JIT state snapshot (NReady!)
+    pub fn is_jit_snapshot_point(&self) -> bool {
+        matches!(self,
+            Self::SecTrustRoot |      // After SEC, before PEI (initial state)
+            Self::PeiHobCreation |    // After memory init (memory layout known)
+            Self::DxeArchProtocols |  // After core protocols (stable environment)
+            Self::BdsExitBootServices // Before OS handoff (final firmware state)
+        )
+    }
+    
+    /// Get progress percentage (0-100) for progress bar display
+    pub fn progress_percent(&self) -> u8 {
+        match self {
+            Self::Reset => 0,
+            Self::SecCpuInit => 2,
+            Self::SecTrustRoot => 5,
+            Self::PeiProtectedMode => 8,
+            Self::PeiMemoryInit => 12,
+            Self::PeiMemoryDiscovery => 18,
+            Self::PeiHobCreation => 22,
+            Self::DxeLongMode => 25,
+            Self::DxeDispatcher => 30,
+            Self::DxeArchProtocols => 38,
+            Self::DxeGopInit => 45,
+            Self::DxePlatformDrivers => 55,
+            Self::DxeConsoleInit => 60,
+            Self::DxePciEnumeration => 70,
+            Self::DxeStorageDrivers => 80,
+            Self::DxeNetworkDrivers => 88,
+            Self::BdsWaitingForSetupKey => 92,
+            Self::BdsSetupMenu => 92,
+            Self::BdsDeviceEnumeration => 95,
+            Self::BdsBootMenu => 95,
+            Self::BdsLoadingOsLoader => 98,
+            Self::BdsExitBootServices => 99,
+            Self::RtRunning | Self::RtVirtualMode => 100,
+            // Legacy phases
+            Self::PostInProgress => 10,
+            Self::PostComplete => 25,
+            Self::InitDevices => 50,
+            Self::WaitingForSetupKey => 90,
+            Self::SetupMenu => 90,
+            Self::BootSelect => 95,
+            Self::Loading => 98,
+            Self::Running => 100,
+            Self::NoBootableDevice | Self::Failed => 100,
+        }
+    }
+}
+
+/// UEFI boot phase UI callback trait
+/// 
+/// Implement this trait to receive UI updates during UEFI boot.
+/// This enables custom boot screen rendering (progress bars, logos, etc.)
+pub trait UefiBootUiCallback: Send + Sync {
+    /// Called when boot phase changes
+    fn on_phase_change(&self, old_phase: BootPhase, new_phase: BootPhase);
+    
+    /// Called to update progress bar (0-100)
+    fn on_progress_update(&self, percent: u8, message: &str);
+    
+    /// Called when a driver is loaded during DXE
+    fn on_driver_loaded(&self, driver_name: &str, load_time_us: u64);
+    
+    /// Called when boot timeout ticks (for countdown display)
+    fn on_timeout_tick(&self, remaining_secs: u8);
+    
+    /// Called when entering setup menu
+    fn on_setup_enter(&self);
+    
+    /// Called before ExitBootServices (chance to save JIT state)
+    fn on_exit_boot_services(&self);
+}
+
 /// Firmware state for monitoring and debugging
 #[derive(Debug, Clone)]
 pub struct FirmwareState {
@@ -125,6 +300,12 @@ pub struct FirmwareState {
     pub last_error: Option<String>,
     /// Whether Ctrl+Alt+Del was pressed
     pub reboot_requested: bool,
+    /// UEFI-specific: Current DXE driver being loaded
+    pub current_driver: Option<String>,
+    /// UEFI-specific: DXE driver load times (name -> microseconds)
+    pub driver_load_times: Vec<(String, u64)>,
+    /// JIT snapshot taken at this phase
+    pub jit_snapshot_phase: Option<BootPhase>,
 }
 
 impl Default for FirmwareState {
@@ -144,6 +325,9 @@ impl Default for FirmwareState {
             menu_state: None,
             last_error: None,
             reboot_requested: false,
+            current_driver: None,
+            driver_load_times: Vec::new(),
+            jit_snapshot_phase: None,
         }
     }
 }
@@ -245,6 +429,8 @@ pub struct FirmwareManager {
     post_history: Mutex<Vec<(u8, u64)>>,  // (code, timestamp_ms)
     /// Error log
     error_log: Mutex<Vec<String>>,
+    /// UI callback for boot progress (optional)
+    ui_callback: RwLock<Option<Arc<dyn UefiBootUiCallback>>>,
 }
 
 impl FirmwareManager {
@@ -261,7 +447,18 @@ impl FirmwareManager {
             boot_sector_cache: Mutex::new(None),
             post_history: Mutex::new(Vec::new()),
             error_log: Mutex::new(Vec::new()),
+            ui_callback: RwLock::new(None),
         }
+    }
+    
+    /// Set UI callback for boot progress updates
+    pub fn set_ui_callback(&self, callback: Arc<dyn UefiBootUiCallback>) {
+        *self.ui_callback.write().unwrap() = Some(callback);
+    }
+    
+    /// Clear UI callback
+    pub fn clear_ui_callback(&self) {
+        *self.ui_callback.write().unwrap() = None;
     }
     
     /// Initialize firmware for the specified memory size
@@ -464,9 +661,63 @@ impl FirmwareManager {
         self.state.read().unwrap().phase
     }
     
-    /// Set boot phase
+    /// Set boot phase with UI callback notification
     fn set_phase(&self, phase: BootPhase) {
-        self.state.write().unwrap().phase = phase;
+        let old_phase = {
+            let mut state = self.state.write().unwrap();
+            let old = state.phase;
+            state.phase = phase;
+            old
+        };
+        
+        // Notify UI callback
+        if let Some(ref callback) = *self.ui_callback.read().unwrap() {
+            callback.on_phase_change(old_phase, phase);
+            callback.on_progress_update(phase.progress_percent(), phase.uefi_phase_name());
+        }
+        
+        // Check if this is a JIT snapshot point
+        if phase.is_jit_snapshot_point() {
+            let mut state = self.state.write().unwrap();
+            state.jit_snapshot_phase = Some(phase);
+            log::info!("[Firmware] JIT snapshot point: {:?} ({})", phase, phase.uefi_phase_name());
+        }
+    }
+    
+    /// Set boot phase for UEFI with detailed sub-phase tracking
+    pub fn set_uefi_phase(&self, phase: BootPhase, driver_name: Option<&str>) {
+        // Update driver tracking
+        if let Some(name) = driver_name {
+            let mut state = self.state.write().unwrap();
+            state.current_driver = Some(name.to_string());
+        }
+        
+        self.set_phase(phase);
+    }
+    
+    /// Record DXE driver load time
+    pub fn record_driver_load(&self, driver_name: &str, load_time_us: u64) {
+        {
+            let mut state = self.state.write().unwrap();
+            state.driver_load_times.push((driver_name.to_string(), load_time_us));
+            state.current_driver = None;
+        }
+        
+        // Notify UI callback
+        if let Some(ref callback) = *self.ui_callback.read().unwrap() {
+            callback.on_driver_loaded(driver_name, load_time_us);
+        }
+    }
+    
+    /// Notify ExitBootServices hook (for JIT state saving)
+    pub fn notify_exit_boot_services(&self) {
+        self.set_phase(BootPhase::BdsExitBootServices);
+        
+        if let Some(ref callback) = *self.ui_callback.read().unwrap() {
+            callback.on_exit_boot_services();
+        }
+        
+        log::info!("[Firmware] ExitBootServices - transitioning to RT phase");
     }
     
     /// Update POST code

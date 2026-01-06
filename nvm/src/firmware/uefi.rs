@@ -803,13 +803,30 @@ impl UefiBootServices {
 }
 
 /// UEFI Runtime Services
+/// 
+/// Provides runtime services available after ExitBootServices.
+/// These services remain available to the OS during the RT phase.
 pub struct UefiRuntimeServices {
-    /// NVRAM variables
-    variables: HashMap<String, (u32, Vec<u8>)>,  // (attributes, data)
+    /// NVRAM variables (name -> (attributes, data))
+    variables: HashMap<String, (u32, Vec<u8>)>,
     /// Current time
     time: EfiTime,
+    /// Wakeup alarm time (if set)
+    wakeup_time: Option<EfiTime>,
+    /// Wakeup alarm enabled
+    wakeup_enabled: bool,
     /// Reset type for next reset
     pending_reset: Option<ResetType>,
+    /// High monotonic count (upper 32 bits)
+    high_monotonic_count: u32,
+    /// Virtual address map applied
+    virtual_mode_active: bool,
+    /// Virtual address offset (for pointer conversion)
+    virtual_offset: i64,
+    /// Capsule update data (if pending)
+    pending_capsule: Option<Vec<u8>>,
+    /// Whether boot services have been exited
+    boot_services_exited: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -851,11 +868,48 @@ pub enum ResetType {
 
 impl UefiRuntimeServices {
     pub fn new() -> Self {
+        // Initialize standard UEFI variables
+        let mut variables = HashMap::new();
+        
+        // SecureBoot variable (0 = disabled, 1 = enabled)
+        variables.insert(
+            "SecureBoot".to_string(),
+            (0x06, vec![0x00])  // BS+RT, disabled by default
+        );
+        
+        // SetupMode variable (1 = setup mode, 0 = user mode)
+        variables.insert(
+            "SetupMode".to_string(),
+            (0x06, vec![0x01])  // BS+RT, setup mode
+        );
+        
         Self {
-            variables: HashMap::new(),
+            variables,
             time: EfiTime::default(),
+            wakeup_time: None,
+            wakeup_enabled: false,
             pending_reset: None,
+            high_monotonic_count: 0,
+            virtual_mode_active: false,
+            virtual_offset: 0,
+            pending_capsule: None,
+            boot_services_exited: false,
         }
+    }
+    
+    /// Mark boot services as exited (called by ExitBootServices)
+    pub fn exit_boot_services(&mut self) {
+        self.boot_services_exited = true;
+        // Remove variables with BS (Boot Services) only attribute
+        self.variables.retain(|_, (attr, _)| {
+            // Keep if has RT (Runtime) attribute (bit 2)
+            (*attr & 0x04) != 0
+        });
+    }
+    
+    /// Check if boot services have exited
+    pub fn are_boot_services_exited(&self) -> bool {
+        self.boot_services_exited
     }
     
     /// Get time
@@ -868,6 +922,17 @@ impl UefiRuntimeServices {
         self.time = time;
     }
     
+    /// Get wakeup time
+    pub fn get_wakeup_time(&self) -> (bool, bool, Option<EfiTime>) {
+        (self.wakeup_enabled, self.wakeup_time.is_some(), self.wakeup_time)
+    }
+    
+    /// Set wakeup time
+    pub fn set_wakeup_time(&mut self, enable: bool, time: Option<EfiTime>) {
+        self.wakeup_enabled = enable;
+        self.wakeup_time = time;
+    }
+    
     /// Get variable
     pub fn get_variable(&self, name: &str) -> Option<(u32, &[u8])> {
         self.variables.get(name).map(|(attr, data)| (*attr, data.as_slice()))
@@ -875,12 +940,89 @@ impl UefiRuntimeServices {
     
     /// Set variable
     pub fn set_variable(&mut self, name: &str, attributes: u32, data: Vec<u8>) {
-        self.variables.insert(name.to_string(), (attributes, data));
+        if data.is_empty() {
+            // Empty data = delete variable
+            self.variables.remove(name);
+        } else {
+            self.variables.insert(name.to_string(), (attributes, data));
+        }
+    }
+    
+    /// Get next variable name (for enumeration)
+    pub fn get_next_variable_name(&self, current: Option<&str>) -> Option<String> {
+        let names: Vec<_> = self.variables.keys().collect();
+        match current {
+            None => names.first().map(|s| (*s).clone()),
+            Some(curr) => {
+                let pos = names.iter().position(|&n| n == curr)?;
+                names.get(pos + 1).map(|s| (*s).clone())
+            }
+        }
+    }
+    
+    /// Get next high monotonic count
+    pub fn get_next_high_monotonic_count(&mut self) -> u32 {
+        self.high_monotonic_count = self.high_monotonic_count.wrapping_add(1);
+        self.high_monotonic_count
+    }
+    
+    /// Set virtual address map
+    /// 
+    /// Called by OS to switch runtime services to virtual addressing.
+    /// After this call, all runtime service pointers are converted.
+    pub fn set_virtual_address_map(&mut self, offset: i64) -> bool {
+        if self.virtual_mode_active {
+            return false;  // Can only be called once
+        }
+        self.virtual_mode_active = true;
+        self.virtual_offset = offset;
+        true
+    }
+    
+    /// Convert pointer (physical to virtual or vice versa)
+    pub fn convert_pointer(&self, addr: u64) -> u64 {
+        if self.virtual_mode_active {
+            (addr as i64 + self.virtual_offset) as u64
+        } else {
+            addr
+        }
+    }
+    
+    /// Check if virtual mode is active
+    pub fn is_virtual_mode(&self) -> bool {
+        self.virtual_mode_active
     }
     
     /// Request reset
     pub fn reset_system(&mut self, reset_type: ResetType) {
         self.pending_reset = Some(reset_type);
+    }
+    
+    /// Get pending reset (and clear it)
+    pub fn take_pending_reset(&mut self) -> Option<ResetType> {
+        self.pending_reset.take()
+    }
+    
+    /// Check if reset is pending
+    pub fn is_reset_pending(&self) -> bool {
+        self.pending_reset.is_some()
+    }
+    
+    /// Update capsule (firmware update mechanism)
+    pub fn update_capsule(&mut self, capsule_data: Vec<u8>) -> bool {
+        // Basic validation: UEFI capsule header starts with GUID
+        if capsule_data.len() < 64 {
+            return false;
+        }
+        self.pending_capsule = Some(capsule_data);
+        true
+    }
+    
+    /// Query capsule capabilities
+    pub fn query_capsule_capabilities(&self) -> (u64, u32) {
+        // Return (MaximumCapsuleSize, ResetType)
+        // 64MB max, cold reset required
+        (64 * 1024 * 1024, 0)
     }
 }
 
@@ -1561,7 +1703,12 @@ impl Firmware for UefiFirmware {
             0x20 => {
                 let map_key = regs.rdx;
                 match self.boot_services.exit_boot_services(map_key) {
-                    Ok(()) => regs.rax = 0,
+                    Ok(()) => {
+                        // Notify runtime services that boot services have exited
+                        self.runtime_services.exit_boot_services();
+                        log::info!("[UEFI] ExitBootServices called - transitioning to RT phase");
+                        regs.rax = 0;
+                    }
                     Err(_) => regs.rax = 0x8000000000000002,  // EFI_INVALID_PARAMETER
                 }
             }
@@ -1653,13 +1800,138 @@ impl Firmware for UefiFirmware {
             
             // SetVirtualAddressMap (0x41)
             0x41 => {
-                // Required for transitioning to virtual mode
-                regs.rax = 0;  // EFI_SUCCESS
+                // RCX = MemoryMapSize, RDX = DescriptorSize, R8 = DescriptorVersion, R9 = VirtualMap
+                // The OS calls this to switch runtime services to virtual addressing
+                let _map_size = regs.rcx;
+                let _desc_size = regs.rdx;
+                let _desc_version = regs.r8;
+                let _virtual_map = regs.r9;
+                
+                // For simplicity, we assume identity mapping (no offset)
+                // A real implementation would parse the virtual map and calculate offsets
+                if self.runtime_services.set_virtual_address_map(0) {
+                    log::info!("[UEFI] SetVirtualAddressMap called - entering virtual mode");
+                    regs.rax = 0;  // EFI_SUCCESS
+                } else {
+                    // Can only be called once
+                    regs.rax = 0x8000000000000003;  // EFI_UNSUPPORTED
+                }
             }
             
             // ConvertPointer (0x42)
             0x42 => {
+                // RCX = DebugDisposition, RDX = Address ptr
+                let addr_ptr = regs.rdx as usize;
+                if addr_ptr + 8 <= memory.len() {
+                    let addr = u64::from_le_bytes([
+                        memory[addr_ptr], memory[addr_ptr+1], memory[addr_ptr+2], memory[addr_ptr+3],
+                        memory[addr_ptr+4], memory[addr_ptr+5], memory[addr_ptr+6], memory[addr_ptr+7],
+                    ]);
+                    let converted = self.runtime_services.convert_pointer(addr);
+                    memory[addr_ptr..addr_ptr+8].copy_from_slice(&converted.to_le_bytes());
+                    regs.rax = 0;
+                } else {
+                    regs.rax = 0x8000000000000002;
+                }
+            }
+            
+            // GetWakeupTime (0x43)
+            0x43 => {
+                // RCX = Enabled ptr, RDX = Pending ptr, R8 = Time ptr
+                let enabled_ptr = regs.rcx as usize;
+                let pending_ptr = regs.rdx as usize;
+                let time_ptr = regs.r8 as usize;
+                
+                let (enabled, pending, time) = self.runtime_services.get_wakeup_time();
+                
+                if enabled_ptr + 1 <= memory.len() {
+                    memory[enabled_ptr] = enabled as u8;
+                }
+                if pending_ptr + 1 <= memory.len() {
+                    memory[pending_ptr] = pending as u8;
+                }
+                if let Some(t) = time {
+                    if time_ptr + 16 <= memory.len() {
+                        memory[time_ptr..time_ptr+2].copy_from_slice(&t.year.to_le_bytes());
+                        memory[time_ptr+2] = t.month;
+                        memory[time_ptr+3] = t.day;
+                        memory[time_ptr+4] = t.hour;
+                        memory[time_ptr+5] = t.minute;
+                        memory[time_ptr+6] = t.second;
+                        memory[time_ptr+7] = 0;
+                        memory[time_ptr+8..time_ptr+12].copy_from_slice(&t.nanosecond.to_le_bytes());
+                        memory[time_ptr+12..time_ptr+14].copy_from_slice(&t.timezone.to_le_bytes());
+                        memory[time_ptr+14] = t.daylight;
+                        memory[time_ptr+15] = 0;
+                    }
+                }
                 regs.rax = 0;
+            }
+            
+            // SetWakeupTime (0x44)
+            0x44 => {
+                // RCX = Enable, RDX = Time ptr
+                let enable = regs.rcx != 0;
+                let time_ptr = regs.rdx as usize;
+                
+                let time = if enable && time_ptr + 16 <= memory.len() {
+                    Some(EfiTime {
+                        year: u16::from_le_bytes([memory[time_ptr], memory[time_ptr+1]]),
+                        month: memory[time_ptr+2],
+                        day: memory[time_ptr+3],
+                        hour: memory[time_ptr+4],
+                        minute: memory[time_ptr+5],
+                        second: memory[time_ptr+6],
+                        nanosecond: u32::from_le_bytes([
+                            memory[time_ptr+8], memory[time_ptr+9],
+                            memory[time_ptr+10], memory[time_ptr+11]
+                        ]),
+                        timezone: i16::from_le_bytes([memory[time_ptr+12], memory[time_ptr+13]]),
+                        daylight: memory[time_ptr+14],
+                    })
+                } else {
+                    None
+                };
+                
+                self.runtime_services.set_wakeup_time(enable, time);
+                regs.rax = 0;
+            }
+            
+            // GetNextHighMonotonicCount (0x45)
+            0x45 => {
+                // RCX = HighCount ptr
+                let count_ptr = regs.rcx as usize;
+                let count = self.runtime_services.get_next_high_monotonic_count();
+                if count_ptr + 4 <= memory.len() {
+                    memory[count_ptr..count_ptr+4].copy_from_slice(&count.to_le_bytes());
+                    regs.rax = 0;
+                } else {
+                    regs.rax = 0x8000000000000002;
+                }
+            }
+            
+            // QueryCapsuleCapabilities (0x46)
+            0x46 => {
+                // RCX = CapsuleHeaderArray, RDX = CapsuleCount, R8 = MaximumCapsuleSize ptr, R9 = ResetType ptr
+                let max_size_ptr = regs.r8 as usize;
+                let reset_type_ptr = regs.r9 as usize;
+                
+                let (max_size, reset_type) = self.runtime_services.query_capsule_capabilities();
+                
+                if max_size_ptr + 8 <= memory.len() {
+                    memory[max_size_ptr..max_size_ptr+8].copy_from_slice(&max_size.to_le_bytes());
+                }
+                if reset_type_ptr + 4 <= memory.len() {
+                    memory[reset_type_ptr..reset_type_ptr+4].copy_from_slice(&reset_type.to_le_bytes());
+                }
+                regs.rax = 0;
+            }
+            
+            // GetNextVariableName (0x47)
+            0x47 => {
+                // RCX = VariableNameSize ptr, RDX = VariableName buffer, R8 = VendorGuid ptr
+                // For simplicity, return EFI_NOT_FOUND (enumeration not implemented)
+                regs.rax = 0x8000000000000005;  // EFI_NOT_FOUND
             }
             
             // ==================== GOP Protocol Services (0x50+) ====================
