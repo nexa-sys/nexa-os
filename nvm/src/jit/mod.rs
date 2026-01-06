@@ -91,7 +91,7 @@ pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandi
 pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller, JitCompileCallback};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
 pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
-pub use block_manager::{BlockManager, UnifiedBlock, IsaCodegenConfig};
+pub use block_manager::{BlockManager, UnifiedBlock, IsaCodegenConfig, IsaCodeGen, IsaOpCategory, IrOpStats, IsaUpgradeEvaluator, UpgradeDecision, UpgradeReason};
 
 // Deoptimization and speculation exports
 pub use deopt::{DeoptManager, DeoptGuard, DeoptReason, DeoptState, DeoptStatsSnapshot, GuardKind, RegMapping, DeoptMetadata};
