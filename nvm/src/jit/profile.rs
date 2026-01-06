@@ -5,6 +5,8 @@
 //! - Branch target statistics (speculative optimization)
 //! - Call target frequencies (inline decisions)
 //! - Type profiles (speculation)
+//! - Value profiles (value speculation)
+//! - Path profiles (multi-condition optimization)
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
@@ -19,6 +21,329 @@ pub struct BlockProfile {
     pub branch_not_taken: u64,
     pub call_target: Option<u64>,
     pub call_mono_ratio: Option<f64>,
+}
+
+/// Type tag for value classification (for speculation)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ValueTypeTag {
+    /// Unknown type
+    Unknown,
+    /// Zero value
+    Zero,
+    /// Small positive integer (fits in imm8)
+    SmallPositive,
+    /// Positive integer
+    Positive,
+    /// Negative integer
+    Negative,
+    /// Pointer (high bits indicate kernel/user space)
+    Pointer,
+    /// Looks like an address in low memory
+    LowAddress,
+    /// Boolean-like (0 or 1)
+    Boolean,
+    /// Aligned address (8-byte aligned)
+    Aligned8,
+    /// Aligned address (page aligned)
+    PageAligned,
+}
+
+impl ValueTypeTag {
+    /// Classify a value into a type tag
+    pub fn classify(value: u64) -> Self {
+        if value == 0 {
+            ValueTypeTag::Zero
+        } else if value == 1 {
+            ValueTypeTag::Boolean
+        } else if value <= 127 {
+            ValueTypeTag::SmallPositive
+        } else if value < 0x8000_0000_0000_0000 {
+            if value & 0xFFF == 0 {
+                ValueTypeTag::PageAligned
+            } else if value & 0x7 == 0 {
+                ValueTypeTag::Aligned8
+            } else if value < 0x1000_0000 {
+                ValueTypeTag::LowAddress
+            } else {
+                ValueTypeTag::Positive
+            }
+        } else {
+            // High bit set - could be pointer or negative
+            if value >= 0xFFFF_8000_0000_0000 {
+                ValueTypeTag::Pointer // Kernel address range
+            } else {
+                ValueTypeTag::Negative
+            }
+        }
+    }
+}
+
+/// Type profile for a register at a specific location
+#[derive(Default)]
+pub struct RegisterTypeProfile {
+    /// Observed type tags with counts
+    tags: RwLock<HashMap<ValueTypeTag, AtomicU64>>,
+    /// Total observations
+    total: AtomicU64,
+}
+
+impl RegisterTypeProfile {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn record(&self, value: u64) {
+        let tag = ValueTypeTag::classify(value);
+        self.total.fetch_add(1, Ordering::Relaxed);
+        
+        let tags = self.tags.read().unwrap();
+        if let Some(counter) = tags.get(&tag) {
+            counter.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        drop(tags);
+        
+        let mut tags = self.tags.write().unwrap();
+        tags.entry(tag)
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    
+    /// Get dominant type if confidence > threshold
+    pub fn dominant_type(&self, threshold: f64) -> Option<ValueTypeTag> {
+        let total = self.total.load(Ordering::Relaxed);
+        if total < 100 {
+            return None;
+        }
+        
+        let tags = self.tags.read().unwrap();
+        tags.iter()
+            .max_by_key(|(_, count)| count.load(Ordering::Relaxed))
+            .filter(|(_, count)| {
+                let c = count.load(Ordering::Relaxed);
+                (c as f64 / total as f64) >= threshold
+            })
+            .map(|(&tag, _)| tag)
+    }
+    
+    pub fn is_monomorphic(&self) -> bool {
+        self.dominant_type(0.99).is_some()
+    }
+}
+
+/// Value profile for tracking specific values at a location
+#[derive(Default)]
+pub struct RegisterValueProfile {
+    /// Value -> count mapping (limited to top N)
+    values: RwLock<Vec<(u64, AtomicU64)>>,
+    /// Total observations
+    total: AtomicU64,
+    /// Max tracked distinct values
+    max_values: usize,
+}
+
+impl RegisterValueProfile {
+    pub fn new() -> Self {
+        Self {
+            values: RwLock::new(Vec::new()),
+            total: AtomicU64::new(0),
+            max_values: 8,
+        }
+    }
+    
+    pub fn with_max(max: usize) -> Self {
+        Self {
+            values: RwLock::new(Vec::new()),
+            total: AtomicU64::new(0),
+            max_values: max,
+        }
+    }
+    
+    pub fn record(&self, value: u64) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+        
+        // Fast path: check if value exists
+        {
+            let values = self.values.read().unwrap();
+            for (v, count) in values.iter() {
+                if *v == value {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+        
+        // Slow path: add new value
+        let mut values = self.values.write().unwrap();
+        // Double-check after acquiring write lock
+        for (v, count) in values.iter() {
+            if *v == value {
+                count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        
+        if values.len() < self.max_values {
+            values.push((value, AtomicU64::new(1)));
+        }
+    }
+    
+    /// Get dominant value if confidence > threshold
+    pub fn dominant_value(&self, threshold: f64) -> Option<(u64, f64)> {
+        let total = self.total.load(Ordering::Relaxed);
+        if total < 100 {
+            return None;
+        }
+        
+        let values = self.values.read().unwrap();
+        values.iter()
+            .max_by_key(|(_, count)| count.load(Ordering::Relaxed))
+            .filter(|(_, count)| {
+                let c = count.load(Ordering::Relaxed);
+                (c as f64 / total as f64) >= threshold
+            })
+            .map(|(val, count)| {
+                let c = count.load(Ordering::Relaxed);
+                (*val, c as f64 / total as f64)
+            })
+    }
+    
+    /// Check if values fall within a tight range
+    pub fn value_range(&self) -> Option<(u64, u64)> {
+        let values = self.values.read().unwrap();
+        if values.is_empty() {
+            return None;
+        }
+        
+        let min = values.iter().map(|(v, _)| *v).min().unwrap();
+        let max = values.iter().map(|(v, _)| *v).max().unwrap();
+        
+        // Check if range is tight and covers most observations
+        let span = max.saturating_sub(min);
+        let total = self.total.load(Ordering::Relaxed);
+        let covered: u64 = values.iter()
+            .map(|(_, c)| c.load(Ordering::Relaxed))
+            .sum();
+        
+        if span <= 256 && (covered as f64 / total as f64) >= 0.90 {
+            Some((min, max.saturating_add(1)))
+        } else {
+            None
+        }
+    }
+    
+    /// Check if values appear to be aligned
+    pub fn common_alignment(&self) -> Option<u64> {
+        let values = self.values.read().unwrap();
+        if values.is_empty() {
+            return None;
+        }
+        
+        // Find common alignment (8, 16, 4096, etc.)
+        let alignments = [4096u64, 64, 16, 8, 4];
+        for align in alignments {
+            if values.iter().all(|(v, _)| v % align == 0) {
+                return Some(align);
+            }
+        }
+        None
+    }
+}
+
+/// Path profile entry for multi-condition speculation
+#[derive(Debug)]
+pub struct PathProfileEntry {
+    /// Condition values: (reg_index, observed_value)
+    pub conditions: Vec<(u8, u64)>,
+    /// Times this exact path was taken
+    pub count: AtomicU64,
+    /// Target RIP after conditions
+    pub target_rip: u64,
+}
+
+impl Clone for PathProfileEntry {
+    fn clone(&self) -> Self {
+        Self {
+            conditions: self.conditions.clone(),
+            count: AtomicU64::new(self.count.load(Ordering::Relaxed)),
+            target_rip: self.target_rip,
+        }
+    }
+}
+
+/// Path profile for tracking execution paths
+#[derive(Default)]
+pub struct PathProfile {
+    /// Observed paths
+    paths: RwLock<Vec<PathProfileEntry>>,
+    /// Total path observations
+    total: AtomicU64,
+    /// Max tracked paths
+    max_paths: usize,
+}
+
+impl PathProfile {
+    pub fn new() -> Self {
+        Self {
+            paths: RwLock::new(Vec::new()),
+            total: AtomicU64::new(0),
+            max_paths: 8,
+        }
+    }
+    
+    /// Record a path observation
+    pub fn record(&self, conditions: &[(u8, u64)], target_rip: u64) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+        
+        // Check if path exists
+        {
+            let paths = self.paths.read().unwrap();
+            for path in paths.iter() {
+                if path.target_rip == target_rip && path.conditions == conditions {
+                    path.count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+        
+        // Add new path
+        let mut paths = self.paths.write().unwrap();
+        // Double-check
+        for path in paths.iter() {
+            if path.target_rip == target_rip && path.conditions == conditions {
+                path.count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        
+        if paths.len() < self.max_paths {
+            paths.push(PathProfileEntry {
+                conditions: conditions.to_vec(),
+                count: AtomicU64::new(1),
+                target_rip,
+            });
+        }
+    }
+    
+    /// Get dominant path if confidence > threshold
+    pub fn dominant_path(&self, threshold: f64) -> Option<(Vec<(u8, u64)>, u64, f64)> {
+        let total = self.total.load(Ordering::Relaxed);
+        if total < 100 {
+            return None;
+        }
+        
+        let paths = self.paths.read().unwrap();
+        paths.iter()
+            .max_by_key(|p| p.count.load(Ordering::Relaxed))
+            .filter(|p| {
+                let c = p.count.load(Ordering::Relaxed);
+                (c as f64 / total as f64) >= threshold
+            })
+            .map(|p| {
+                let c = p.count.load(Ordering::Relaxed);
+                (p.conditions.clone(), p.target_rip, c as f64 / total as f64)
+            })
+    }
 }
 
 /// Profile database for JIT compilation decisions
@@ -37,6 +362,15 @@ pub struct ProfileDb {
     
     /// Memory access profiles: rip -> pattern
     memory_profiles: RwLock<HashMap<u64, MemoryProfile>>,
+    
+    /// Type profiles: (rip, reg) -> type profile
+    type_profiles: RwLock<HashMap<(u64, u8), RegisterTypeProfile>>,
+    
+    /// Value profiles: (rip, reg) -> value profile
+    value_profiles: RwLock<HashMap<(u64, u8), RegisterValueProfile>>,
+    
+    /// Path profiles: entry_rip -> path profile
+    path_profiles: RwLock<HashMap<u64, PathProfile>>,
     
     /// Maximum entries per category (prevent unbounded growth)
     max_entries: usize,
@@ -303,6 +637,9 @@ impl ProfileDb {
             call_profiles: RwLock::new(HashMap::new()),
             loop_profiles: RwLock::new(HashMap::new()),
             memory_profiles: RwLock::new(HashMap::new()),
+            type_profiles: RwLock::new(HashMap::new()),
+            value_profiles: RwLock::new(HashMap::new()),
+            path_profiles: RwLock::new(HashMap::new()),
             max_entries,
         }
     }
@@ -502,30 +839,104 @@ impl ProfileDb {
     }
     
     // ========================================================================
-    // Serialization for NReady!
+    // Serialization for NReady! (Enterprise-Grade)
     // ========================================================================
+    //
+    // Format: Section-based with forward/backward compatibility
+    //
+    // Header (16 bytes):
+    //   [0..4]   Magic: "NVMP"
+    //   [4..8]   Version: u32 (current: 2)
+    //   [8..12]  Total sections: u32
+    //   [12..16] Reserved: u32
+    //
+    // Each Section:
+    //   [0..2]   Section type: u16
+    //   [2..6]   Section length: u32 (excluding header)
+    //   [6..]    Section data
+    //
+    // Section types:
+    //   0x0001 - Block counts
+    //   0x0002 - Branch profiles
+    //   0x0010 - Type profiles (V2)
+    //   0x0011 - Value profiles (V2)
+    //   0x0012 - Path profiles (V2)
+    //   0x0013 - Call profiles (V2)
+    //   0x00FF - Extension (future)
+    //
+    // Unknown sections are skipped (forward compatibility)
+    // Missing sections use defaults (backward compatibility)
     
-    /// Serialize profile data for persistence
+    const SECTION_BLOCK_COUNTS: u16 = 0x0001;
+    const SECTION_BRANCH_PROFILES: u16 = 0x0002;
+    const SECTION_TYPE_PROFILES: u16 = 0x0010;
+    const SECTION_VALUE_PROFILES: u16 = 0x0011;
+    const SECTION_PATH_PROFILES: u16 = 0x0012;
+    const SECTION_CALL_PROFILES: u16 = 0x0013;
+    
+    /// Serialize profile data for NReady! persistence
+    /// 
+    /// Uses section-based format for forward/backward compatibility:
+    /// - Old readers skip unknown sections
+    /// - New readers handle missing sections with defaults
+    /// - Full distribution data preserved (not just dominant values)
     pub fn serialize(&self) -> Vec<u8> {
+        let mut sections: Vec<(u16, Vec<u8>)> = Vec::new();
+        
+        // Section 0x0001: Block counts
+        sections.push((Self::SECTION_BLOCK_COUNTS, self.serialize_block_counts()));
+        
+        // Section 0x0002: Branch profiles
+        sections.push((Self::SECTION_BRANCH_PROFILES, self.serialize_branch_profiles()));
+        
+        // Section 0x0010: Type profiles (full distribution)
+        sections.push((Self::SECTION_TYPE_PROFILES, self.serialize_type_profiles()));
+        
+        // Section 0x0011: Value profiles (full distribution)
+        sections.push((Self::SECTION_VALUE_PROFILES, self.serialize_value_profiles()));
+        
+        // Section 0x0012: Path profiles
+        sections.push((Self::SECTION_PATH_PROFILES, self.serialize_path_profiles()));
+        
+        // Section 0x0013: Call profiles (full target list)
+        sections.push((Self::SECTION_CALL_PROFILES, self.serialize_call_profiles()));
+        
+        // Build final buffer
         let mut data = Vec::new();
         
-        // Magic number
+        // Header
         data.extend_from_slice(b"NVMP");
+        data.extend_from_slice(&2u32.to_le_bytes()); // Version
+        data.extend_from_slice(&(sections.len() as u32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // Reserved
         
-        // Version
-        data.extend_from_slice(&1u32.to_le_bytes());
+        // Sections
+        for (section_type, section_data) in sections {
+            data.extend_from_slice(&section_type.to_le_bytes());
+            data.extend_from_slice(&(section_data.len() as u32).to_le_bytes());
+            data.extend_from_slice(&section_data);
+        }
         
-        // Block counts
+        data
+    }
+    
+    fn serialize_block_counts(&self) -> Vec<u8> {
+        let mut data = Vec::new();
         let counts = self.block_counts.read().unwrap();
+        
         data.extend_from_slice(&(counts.len() as u32).to_le_bytes());
         for (rip, count) in counts.iter() {
             data.extend_from_slice(&rip.to_le_bytes());
             data.extend_from_slice(&count.load(Ordering::Relaxed).to_le_bytes());
         }
-        drop(counts);
         
-        // Branch profiles
+        data
+    }
+    
+    fn serialize_branch_profiles(&self) -> Vec<u8> {
+        let mut data = Vec::new();
         let branches = self.branch_profiles.read().unwrap();
+        
         data.extend_from_slice(&(branches.len() as u32).to_le_bytes());
         for (rip, profile) in branches.iter() {
             data.extend_from_slice(&rip.to_le_bytes());
@@ -536,39 +947,150 @@ impl ProfileDb {
         data
     }
     
-    /// Deserialize profile data from persistence
+    fn serialize_type_profiles(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        let types = self.type_profiles.read().unwrap();
+        
+        data.extend_from_slice(&(types.len() as u32).to_le_bytes());
+        for ((rip, reg), profile) in types.iter() {
+            data.extend_from_slice(&rip.to_le_bytes());
+            data.push(*reg);
+            data.extend_from_slice(&profile.total.load(Ordering::Relaxed).to_le_bytes());
+            
+            // Full type distribution (not just dominant)
+            let tags = profile.tags.read().unwrap();
+            data.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+            for (tag, count) in tags.iter() {
+                data.push(*tag as u8);
+                data.extend_from_slice(&count.load(Ordering::Relaxed).to_le_bytes());
+            }
+        }
+        
+        data
+    }
+    
+    fn serialize_value_profiles(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        let values = self.value_profiles.read().unwrap();
+        
+        data.extend_from_slice(&(values.len() as u32).to_le_bytes());
+        for ((rip, reg), profile) in values.iter() {
+            data.extend_from_slice(&rip.to_le_bytes());
+            data.push(*reg);
+            data.extend_from_slice(&profile.total.load(Ordering::Relaxed).to_le_bytes());
+            
+            // Full value distribution
+            let vals = profile.values.read().unwrap();
+            data.extend_from_slice(&(vals.len() as u16).to_le_bytes());
+            for (val, count) in vals.iter() {
+                data.extend_from_slice(&val.to_le_bytes());
+                data.extend_from_slice(&count.load(Ordering::Relaxed).to_le_bytes());
+            }
+        }
+        
+        data
+    }
+    
+    fn serialize_path_profiles(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        let paths = self.path_profiles.read().unwrap();
+        
+        data.extend_from_slice(&(paths.len() as u32).to_le_bytes());
+        for (rip, profile) in paths.iter() {
+            data.extend_from_slice(&rip.to_le_bytes());
+            data.extend_from_slice(&profile.total.load(Ordering::Relaxed).to_le_bytes());
+            
+            // Full path entries
+            let entries = profile.paths.read().unwrap();
+            data.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            for entry in entries.iter() {
+                // Conditions
+                data.extend_from_slice(&(entry.conditions.len() as u16).to_le_bytes());
+                for (reg, val) in &entry.conditions {
+                    data.push(*reg);
+                    data.extend_from_slice(&val.to_le_bytes());
+                }
+                // Target and count
+                data.extend_from_slice(&entry.target_rip.to_le_bytes());
+                data.extend_from_slice(&entry.count.load(Ordering::Relaxed).to_le_bytes());
+            }
+        }
+        
+        data
+    }
+    
+    fn serialize_call_profiles(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        let calls = self.call_profiles.read().unwrap();
+        
+        data.extend_from_slice(&(calls.len() as u32).to_le_bytes());
+        for (rip, profile) in calls.iter() {
+            data.extend_from_slice(&rip.to_le_bytes());
+            
+            // Full target list (not just dominant)
+            let targets = profile.targets.read().unwrap();
+            data.extend_from_slice(&(targets.len() as u16).to_le_bytes());
+            for (target, count) in targets.iter() {
+                data.extend_from_slice(&target.to_le_bytes());
+                data.extend_from_slice(&count.load(Ordering::Relaxed).to_le_bytes());
+            }
+        }
+        
+        data
+    }
+    
+    /// Deserialize profile data from NReady! persistence
+    /// 
+    /// Supports:
+    /// - V1 (legacy sequential format) for backward compatibility
+    /// - V2 (section-based format) with forward compatibility
+    /// 
+    /// Unknown sections are skipped, missing sections use defaults.
     pub fn deserialize(data: &[u8]) -> Option<Self> {
-        if data.len() < 8 || &data[0..4] != b"NVMP" {
+        if data.len() < 16 || &data[0..4] != b"NVMP" {
             return None;
         }
         
         let version = u32::from_le_bytes(data[4..8].try_into().ok()?);
-        if version != 1 {
-            return None;
-        }
         
+        match version {
+            1 => Self::deserialize_v1(data),
+            2 => Self::deserialize_v2(data),
+            _ => {
+                // Future version: try V2 format (forward compatible)
+                log::warn!("[Profile] Unknown version {}, attempting V2 parse", version);
+                Self::deserialize_v2(data)
+            }
+        }
+    }
+    
+    /// Deserialize V1 legacy format (sequential)
+    fn deserialize_v1(data: &[u8]) -> Option<Self> {
         let db = Self::new(100000);
         let mut offset = 8;
         
         // Block counts
+        if offset + 4 > data.len() { return Some(db); }
         let count = u32::from_le_bytes(data[offset..offset+4].try_into().ok()?) as usize;
         offset += 4;
         
-        let mut blocks = db.block_counts.write().unwrap();
-        for _ in 0..count {
-            if offset + 16 > data.len() { break; }
-            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().ok()?);
-            let cnt = u64::from_le_bytes(data[offset+8..offset+16].try_into().ok()?);
-            blocks.insert(rip, AtomicU64::new(cnt));
-            offset += 16;
+        {
+            let mut blocks = db.block_counts.write().unwrap();
+            for _ in 0..count {
+                if offset + 16 > data.len() { break; }
+                let rip = u64::from_le_bytes(data[offset..offset+8].try_into().ok()?);
+                let cnt = u64::from_le_bytes(data[offset+8..offset+16].try_into().ok()?);
+                blocks.insert(rip, AtomicU64::new(cnt));
+                offset += 16;
+            }
         }
-        drop(blocks);
         
         // Branch profiles
-        if offset + 4 <= data.len() {
-            let count = u32::from_le_bytes(data[offset..offset+4].try_into().ok()?) as usize;
-            offset += 4;
-            
+        if offset + 4 > data.len() { return Some(db); }
+        let count = u32::from_le_bytes(data[offset..offset+4].try_into().ok()?) as usize;
+        offset += 4;
+        
+        {
             let mut branches = db.branch_profiles.write().unwrap();
             for _ in 0..count {
                 if offset + 24 > data.len() { break; }
@@ -586,6 +1108,266 @@ impl ProfileDb {
         Some(db)
     }
     
+    /// Deserialize V2 section-based format
+    fn deserialize_v2(data: &[u8]) -> Option<Self> {
+        if data.len() < 16 { return None; }
+        
+        let section_count = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
+        let db = Self::new(100000);
+        let mut offset = 16;
+        
+        for _ in 0..section_count {
+            if offset + 6 > data.len() { break; }
+            
+            let section_type = u16::from_le_bytes(data[offset..offset+2].try_into().ok()?);
+            let section_len = u32::from_le_bytes(data[offset+2..offset+6].try_into().ok()?) as usize;
+            offset += 6;
+            
+            if offset + section_len > data.len() { break; }
+            let section_data = &data[offset..offset+section_len];
+            
+            match section_type {
+                Self::SECTION_BLOCK_COUNTS => {
+                    db.deserialize_block_counts(section_data);
+                }
+                Self::SECTION_BRANCH_PROFILES => {
+                    db.deserialize_branch_profiles(section_data);
+                }
+                Self::SECTION_TYPE_PROFILES => {
+                    db.deserialize_type_profiles(section_data);
+                }
+                Self::SECTION_VALUE_PROFILES => {
+                    db.deserialize_value_profiles(section_data);
+                }
+                Self::SECTION_PATH_PROFILES => {
+                    db.deserialize_path_profiles(section_data);
+                }
+                Self::SECTION_CALL_PROFILES => {
+                    db.deserialize_call_profiles(section_data);
+                }
+                _ => {
+                    // Unknown section: skip (forward compatibility)
+                    log::debug!("[Profile] Skipping unknown section type {:#x}", section_type);
+                }
+            }
+            
+            offset += section_len;
+        }
+        
+        Some(db)
+    }
+    
+    fn deserialize_block_counts(&self, data: &[u8]) {
+        if data.len() < 4 { return; }
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+        
+        let mut blocks = self.block_counts.write().unwrap();
+        for _ in 0..count {
+            if offset + 16 > data.len() { break; }
+            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            let cnt = u64::from_le_bytes(data[offset+8..offset+16].try_into().unwrap());
+            blocks.insert(rip, AtomicU64::new(cnt));
+            offset += 16;
+        }
+    }
+    
+    fn deserialize_branch_profiles(&self, data: &[u8]) {
+        if data.len() < 4 { return; }
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+        
+        let mut branches = self.branch_profiles.write().unwrap();
+        for _ in 0..count {
+            if offset + 24 > data.len() { break; }
+            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            let taken = u64::from_le_bytes(data[offset+8..offset+16].try_into().unwrap());
+            let not_taken = u64::from_le_bytes(data[offset+16..offset+24].try_into().unwrap());
+            branches.insert(rip, BranchProfile {
+                taken: AtomicU64::new(taken),
+                not_taken: AtomicU64::new(not_taken),
+            });
+            offset += 24;
+        }
+    }
+    
+    fn deserialize_type_profiles(&self, data: &[u8]) {
+        if data.len() < 4 { return; }
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+        
+        let mut types = self.type_profiles.write().unwrap();
+        for _ in 0..count {
+            if offset + 17 > data.len() { break; } // rip(8) + reg(1) + total(8)
+            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            let reg = data[offset + 8];
+            let total = u64::from_le_bytes(data[offset+9..offset+17].try_into().unwrap());
+            offset += 17;
+            
+            let profile = RegisterTypeProfile::new();
+            profile.total.store(total, Ordering::Relaxed);
+            
+            // Tag distribution
+            if offset + 2 > data.len() { break; }
+            let tag_count = u16::from_le_bytes(data[offset..offset+2].try_into().unwrap()) as usize;
+            offset += 2;
+            
+            {
+                let mut tags = profile.tags.write().unwrap();
+                for _ in 0..tag_count {
+                    if offset + 9 > data.len() { break; }
+                    let tag_byte = data[offset];
+                    let tag_cnt = u64::from_le_bytes(data[offset+1..offset+9].try_into().unwrap());
+                    offset += 9;
+                    
+                    if let Some(tag) = Self::tag_from_u8(tag_byte) {
+                        tags.insert(tag, AtomicU64::new(tag_cnt));
+                    }
+                }
+            }
+            
+            types.insert((rip, reg), profile);
+        }
+    }
+    
+    fn tag_from_u8(v: u8) -> Option<ValueTypeTag> {
+        match v {
+            0 => Some(ValueTypeTag::Unknown),
+            1 => Some(ValueTypeTag::Zero),
+            2 => Some(ValueTypeTag::SmallPositive),
+            3 => Some(ValueTypeTag::Positive),
+            4 => Some(ValueTypeTag::Negative),
+            5 => Some(ValueTypeTag::Pointer),
+            6 => Some(ValueTypeTag::LowAddress),
+            7 => Some(ValueTypeTag::Boolean),
+            8 => Some(ValueTypeTag::Aligned8),
+            9 => Some(ValueTypeTag::PageAligned),
+            _ => None,
+        }
+    }
+    
+    fn deserialize_value_profiles(&self, data: &[u8]) {
+        if data.len() < 4 { return; }
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+        
+        let mut values = self.value_profiles.write().unwrap();
+        for _ in 0..count {
+            if offset + 17 > data.len() { break; }
+            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            let reg = data[offset + 8];
+            let total = u64::from_le_bytes(data[offset+9..offset+17].try_into().unwrap());
+            offset += 17;
+            
+            let profile = RegisterValueProfile::new();
+            profile.total.store(total, Ordering::Relaxed);
+            
+            // Value distribution
+            if offset + 2 > data.len() { break; }
+            let val_count = u16::from_le_bytes(data[offset..offset+2].try_into().unwrap()) as usize;
+            offset += 2;
+            
+            {
+                let mut vals = profile.values.write().unwrap();
+                for _ in 0..val_count {
+                    if offset + 16 > data.len() { break; }
+                    let val = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+                    let cnt = u64::from_le_bytes(data[offset+8..offset+16].try_into().unwrap());
+                    offset += 16;
+                    vals.push((val, AtomicU64::new(cnt)));
+                }
+            }
+            
+            values.insert((rip, reg), profile);
+        }
+    }
+    
+    fn deserialize_path_profiles(&self, data: &[u8]) {
+        if data.len() < 4 { return; }
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+        
+        let mut paths = self.path_profiles.write().unwrap();
+        for _ in 0..count {
+            if offset + 16 > data.len() { break; }
+            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            let total = u64::from_le_bytes(data[offset+8..offset+16].try_into().unwrap());
+            offset += 16;
+            
+            let profile = PathProfile::new();
+            profile.total.store(total, Ordering::Relaxed);
+            
+            // Path entries
+            if offset + 2 > data.len() { break; }
+            let entry_count = u16::from_le_bytes(data[offset..offset+2].try_into().unwrap()) as usize;
+            offset += 2;
+            
+            {
+                let mut entries = profile.paths.write().unwrap();
+                for _ in 0..entry_count {
+                    if offset + 2 > data.len() { break; }
+                    let cond_count = u16::from_le_bytes(data[offset..offset+2].try_into().unwrap()) as usize;
+                    offset += 2;
+                    
+                    let mut conditions = Vec::with_capacity(cond_count);
+                    for _ in 0..cond_count {
+                        if offset + 9 > data.len() { break; }
+                        let reg = data[offset];
+                        let val = u64::from_le_bytes(data[offset+1..offset+9].try_into().unwrap());
+                        offset += 9;
+                        conditions.push((reg, val));
+                    }
+                    
+                    if offset + 16 > data.len() { break; }
+                    let target_rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+                    let cnt = u64::from_le_bytes(data[offset+8..offset+16].try_into().unwrap());
+                    offset += 16;
+                    
+                    entries.push(PathProfileEntry {
+                        conditions,
+                        count: AtomicU64::new(cnt),
+                        target_rip,
+                    });
+                }
+            }
+            
+            paths.insert(rip, profile);
+        }
+    }
+    
+    fn deserialize_call_profiles(&self, data: &[u8]) {
+        if data.len() < 4 { return; }
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+        
+        let mut calls = self.call_profiles.write().unwrap();
+        for _ in 0..count {
+            if offset + 8 > data.len() { break; }
+            let rip = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            offset += 8;
+            
+            let profile = CallProfile::new();
+            
+            // Target distribution
+            if offset + 2 > data.len() { break; }
+            let target_count = u16::from_le_bytes(data[offset..offset+2].try_into().unwrap()) as usize;
+            offset += 2;
+            
+            {
+                let mut targets = profile.targets.write().unwrap();
+                for _ in 0..target_count {
+                    if offset + 12 > data.len() { break; }
+                    let target = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+                    let cnt = u32::from_le_bytes(data[offset+8..offset+12].try_into().unwrap());
+                    offset += 12;
+                    targets.push((target, AtomicU32::new(cnt)));
+                }
+            }
+            
+            calls.insert(rip, profile);
+        }
+    }
+    
     /// Clear all profile data
     pub fn clear(&self) {
         self.block_counts.write().unwrap().clear();
@@ -593,11 +1375,127 @@ impl ProfileDb {
         self.call_profiles.write().unwrap().clear();
         self.loop_profiles.write().unwrap().clear();
         self.memory_profiles.write().unwrap().clear();
+        self.type_profiles.write().unwrap().clear();
+        self.value_profiles.write().unwrap().clear();
+        self.path_profiles.write().unwrap().clear();
     }
     
     /// Get the number of profiled blocks
     pub fn block_count(&self) -> usize {
         self.block_counts.read().unwrap().len()
+    }
+    
+    // ========================================================================
+    // Type Profiling (for speculation)
+    // ========================================================================
+    
+    /// Record a type observation for a register at a specific RIP
+    pub fn record_type(&self, rip: u64, reg: u8, value: u64) {
+        let key = (rip, reg);
+        
+        let profiles = self.type_profiles.read().unwrap();
+        if let Some(profile) = profiles.get(&key) {
+            profile.record(value);
+            return;
+        }
+        drop(profiles);
+        
+        let mut profiles = self.type_profiles.write().unwrap();
+        if profiles.len() >= self.max_entries {
+            return;
+        }
+        
+        let profile = profiles.entry(key).or_insert_with(RegisterTypeProfile::new);
+        profile.record(value);
+    }
+    
+    /// Get dominant type for a register at a specific RIP
+    pub fn get_dominant_type(&self, rip: u64, reg: u8, threshold: f64) -> Option<ValueTypeTag> {
+        let profiles = self.type_profiles.read().unwrap();
+        profiles.get(&(rip, reg))
+            .and_then(|p| p.dominant_type(threshold))
+    }
+    
+    /// Check if register type is monomorphic
+    pub fn is_type_monomorphic(&self, rip: u64, reg: u8) -> bool {
+        let profiles = self.type_profiles.read().unwrap();
+        profiles.get(&(rip, reg))
+            .map(|p| p.is_monomorphic())
+            .unwrap_or(false)
+    }
+    
+    // ========================================================================
+    // Value Profiling (for value speculation)
+    // ========================================================================
+    
+    /// Record a value observation for a register at a specific RIP
+    pub fn record_value(&self, rip: u64, reg: u8, value: u64) {
+        let key = (rip, reg);
+        
+        let profiles = self.value_profiles.read().unwrap();
+        if let Some(profile) = profiles.get(&key) {
+            profile.record(value);
+            return;
+        }
+        drop(profiles);
+        
+        let mut profiles = self.value_profiles.write().unwrap();
+        if profiles.len() >= self.max_entries {
+            return;
+        }
+        
+        let profile = profiles.entry(key).or_insert_with(RegisterValueProfile::new);
+        profile.record(value);
+    }
+    
+    /// Get dominant value for a register at a specific RIP
+    pub fn get_dominant_value(&self, rip: u64, reg: u8, threshold: f64) -> Option<(u64, f64)> {
+        let profiles = self.value_profiles.read().unwrap();
+        profiles.get(&(rip, reg))
+            .and_then(|p| p.dominant_value(threshold))
+    }
+    
+    /// Get value range for a register at a specific RIP
+    pub fn get_value_range(&self, rip: u64, reg: u8) -> Option<(u64, u64)> {
+        let profiles = self.value_profiles.read().unwrap();
+        profiles.get(&(rip, reg))
+            .and_then(|p| p.value_range())
+    }
+    
+    /// Get common alignment for values at a specific RIP
+    pub fn get_value_alignment(&self, rip: u64, reg: u8) -> Option<u64> {
+        let profiles = self.value_profiles.read().unwrap();
+        profiles.get(&(rip, reg))
+            .and_then(|p| p.common_alignment())
+    }
+    
+    // ========================================================================
+    // Path Profiling (for multi-condition speculation)
+    // ========================================================================
+    
+    /// Record a path observation
+    pub fn record_path(&self, entry_rip: u64, conditions: &[(u8, u64)], target_rip: u64) {
+        let profiles = self.path_profiles.read().unwrap();
+        if let Some(profile) = profiles.get(&entry_rip) {
+            profile.record(conditions, target_rip);
+            return;
+        }
+        drop(profiles);
+        
+        let mut profiles = self.path_profiles.write().unwrap();
+        if profiles.len() >= self.max_entries {
+            return;
+        }
+        
+        let profile = profiles.entry(entry_rip).or_insert_with(PathProfile::new);
+        profile.record(conditions, target_rip);
+    }
+    
+    /// Get dominant path for an entry RIP
+    pub fn get_dominant_path(&self, entry_rip: u64, threshold: f64) -> Option<(Vec<(u8, u64)>, u64, f64)> {
+        let profiles = self.path_profiles.read().unwrap();
+        profiles.get(&entry_rip)
+            .and_then(|p| p.dominant_path(threshold))
     }
     
     /// Merge another profile database into this one
@@ -636,6 +1534,9 @@ impl ProfileDb {
             call_count: self.call_profiles.read().unwrap().len(),
             loop_count: self.loop_profiles.read().unwrap().len(),
             memory_count: self.memory_profiles.read().unwrap().len(),
+            type_count: self.type_profiles.read().unwrap().len(),
+            value_count: self.value_profiles.read().unwrap().len(),
+            path_count: self.path_profiles.read().unwrap().len(),
         }
     }
 }
@@ -648,12 +1549,16 @@ pub struct ProfileStats {
     pub call_count: usize,
     pub loop_count: usize,
     pub memory_count: usize,
+    pub type_count: usize,
+    pub value_count: usize,
+    pub path_count: usize,
 }
 
 impl ProfileStats {
     pub fn total_entries(&self) -> usize {
         self.block_count + self.branch_count + self.call_count + 
-        self.loop_count + self.memory_count
+        self.loop_count + self.memory_count + self.type_count +
+        self.value_count + self.path_count
     }
 }
 
@@ -665,11 +1570,11 @@ mod tests {
     fn test_branch_bias() {
         let profile = BranchProfile::default();
         
-        // Record mostly taken
-        for _ in 0..990 {
+        // Record mostly taken (99.1% > 99% threshold)
+        for _ in 0..991 {
             profile.taken.fetch_add(1, Ordering::Relaxed);
         }
-        for _ in 0..10 {
+        for _ in 0..9 {
             profile.not_taken.fetch_add(1, Ordering::Relaxed);
         }
         

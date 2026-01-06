@@ -66,6 +66,8 @@ pub mod eviction;
 pub mod async_runtime;
 pub mod async_eviction;
 pub mod async_restore;
+pub mod deopt;
+pub mod speculation;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
@@ -77,15 +79,19 @@ pub use decoder::{X86Decoder, DecodedInstr};
 pub use ir::{IrBuilder, IrBlock, IrInstr, IrOp};
 pub use interpreter::Interpreter;
 pub use compiler_s1::S1Compiler;
-pub use compiler_s2::{S2Compiler, S2Config};
+pub use compiler_s2::{S2Compiler, S2Config, OptStats};
 pub use codegen::CodeGen;
-pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
+pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile, BranchBias, ValueTypeTag, RegisterTypeProfile, RegisterValueProfile, PathProfile, ProfileStats};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
 pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock};
 pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
 pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller, JitCompileCallback};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
 pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
+
+// Deoptimization and speculation exports
+pub use deopt::{DeoptManager, DeoptGuard, DeoptReason, DeoptState, DeoptStatsSnapshot, GuardKind, RegMapping, DeoptMetadata};
+pub use speculation::{SpeculationManager, SpecConfig, SpecStatsSnapshot, BlockSpeculations, TypeSpeculation, ValueSpeculation, BranchSpeculation, CallSpeculation, PathSpeculation, TypeTag, CallSpecKind, PathCondition};
 
 // ============================================================================
 // JIT CPU State - Direct access structure for native code

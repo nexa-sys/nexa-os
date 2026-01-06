@@ -144,6 +144,49 @@ impl NReadyCache {
     }
     
     // ========================================================================
+    // Deopt State Persistence (for speculation learning)
+    // ========================================================================
+    
+    /// Save deoptimization state
+    /// 
+    /// Persists disabled speculations and guard failure history so the JIT
+    /// can make smarter speculation decisions on the next run.
+    pub fn save_deopt(&self, deopt_mgr: &super::deopt::DeoptManager) -> JitResult<()> {
+        let path = self.deopt_path();
+        let data = deopt_mgr.serialize();
+        
+        let mut file = File::create(&path)
+            .map_err(|_| JitError::IoError)?;
+        file.write_all(&data)
+            .map_err(|_| JitError::IoError)?;
+        
+        log::info!("[NReady!] Saved deopt state to {} ({} bytes)", path, data.len());
+        Ok(())
+    }
+    
+    /// Load deoptimization state
+    pub fn load_deopt(&self, deopt_mgr: &super::deopt::DeoptManager) -> JitResult<()> {
+        let path = self.deopt_path();
+        let mut file = File::open(&path)
+            .map_err(|_| JitError::IoError)?;
+        
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|_| JitError::IoError)?;
+        
+        if deopt_mgr.deserialize(&data) {
+            log::info!("[NReady!] Loaded deopt state from {} ({} bytes)", path, data.len());
+            Ok(())
+        } else {
+            Err(JitError::InvalidFormat)
+        }
+    }
+    
+    fn deopt_path(&self) -> String {
+        format!("{}/{}.deopt", self.cache_dir, self.instance_id)
+    }
+    
+    // ========================================================================
     // RI Persistence (Backward Compatible)
     // ========================================================================
     
