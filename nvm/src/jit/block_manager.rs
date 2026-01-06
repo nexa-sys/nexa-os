@@ -1384,7 +1384,8 @@ impl BlockManager {
         decoder: &super::decoder::X86Decoder,
     ) -> JitResult<UnifiedBlock> {
         let s1_block = self.s1_compiler.compile(guest_code, start_rip, decoder, &self.profile)?;
-        let required_isa = self.analyze_required_isa(&s1_block.ir);
+        // Use the required_isa computed by S1's ISA pass
+        let required_isa = s1_block.required_isa;
         Ok(UnifiedBlock::from_s1(&s1_block, required_isa))
     }
     
@@ -1394,7 +1395,11 @@ impl BlockManager {
         s1_block: &super::compiler_s1::S1Block,
     ) -> JitResult<UnifiedBlock> {
         let s2_block = self.s2_compiler.compile_from_s1(s1_block, &self.profile)?;
-        let required_isa = self.analyze_required_isa(&s2_block.ir);
+        // Use the required_isa from S2's ISA optimization pass
+        let required_isa = s2_block.opt_stats.isa_opt_result
+            .as_ref()
+            .map(|r| r.required_isa)
+            .unwrap_or_else(|| self.analyze_required_isa(&s2_block.ir));
         Ok(UnifiedBlock::from_s2(&s2_block, required_isa))
     }
     

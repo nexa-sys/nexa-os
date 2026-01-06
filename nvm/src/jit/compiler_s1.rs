@@ -3,11 +3,20 @@
 //! Fast baseline compiler that generates decent code quickly.
 //! No heavy optimizations - focus on compilation speed.
 //! Used for warm-up before S2 kicks in.
+//!
+//! ## ISA-Aware Compilation
+//!
+//! S1 includes lightweight ISA optimization:
+//! - Vector width adjustment based on available ISA (AVX-512/AVX/SSE)
+//! - ISA requirement tracking for codegen
+//! - No pattern matching (done in S2 for compile speed)
 
 use super::{JitResult, JitError};
 use super::ir::{IrBlock, IrBasicBlock, IrInstr, IrOp, IrFlags, VReg, BlockId, ExitReason, IrBuilder};
 use super::decoder::{X86Decoder, DecodedInstr, Mnemonic};
 use super::profile::ProfileDb;
+use super::isa_opt::S1IsaPass;
+use super::nready::InstructionSets;
 
 /// S1 compiler configuration
 #[derive(Clone, Debug)]
@@ -20,6 +29,10 @@ pub struct S1Config {
     pub dead_code_elim: bool,
     /// Enable simple peephole opts
     pub peephole: bool,
+    /// Enable ISA-aware optimization (vector width, etc.)
+    pub isa_opt: bool,
+    /// Target ISA (None = detect current CPU)
+    pub target_isa: Option<InstructionSets>,
 }
 
 impl Default for S1Config {
@@ -29,6 +42,8 @@ impl Default for S1Config {
             const_fold: true,
             dead_code_elim: true,
             peephole: true,
+            isa_opt: true,
+            target_isa: None, // Auto-detect
         }
     }
 }
@@ -45,22 +60,32 @@ pub struct S1Block {
     pub native: Vec<u8>,
     /// Estimated cycles
     pub est_cycles: u32,
+    /// Required ISA for this block
+    pub required_isa: InstructionSets,
 }
 
 /// S1 quick compiler
 pub struct S1Compiler {
     config: S1Config,
+    /// ISA pass instance
+    isa_pass: S1IsaPass,
 }
 
 impl S1Compiler {
     pub fn new() -> Self {
         Self {
             config: S1Config::default(),
+            isa_pass: S1IsaPass::new(),
         }
     }
     
     pub fn with_config(config: S1Config) -> Self {
-        Self { config }
+        let isa_pass = if let Some(isa) = config.target_isa {
+            S1IsaPass::with_isa(isa)
+        } else {
+            S1IsaPass::new()
+        };
+        Self { config, isa_pass }
     }
     
     /// Compile a basic block starting at RIP
@@ -103,6 +128,13 @@ impl S1Compiler {
             self.peephole(&mut ir);
         }
         
+        // Apply ISA-aware optimization (lightweight for S1)
+        let required_isa = if self.config.isa_opt {
+            self.isa_pass.run(&mut ir)
+        } else {
+            InstructionSets::SSE2
+        };
+        
         // Generate native code
         let native = self.codegen(&ir, profile)?;
         let est_cycles = self.estimate_cycles(&ir);
@@ -113,6 +145,7 @@ impl S1Compiler {
             ir,
             native,
             est_cycles,
+            required_isa,
         })
     }
     

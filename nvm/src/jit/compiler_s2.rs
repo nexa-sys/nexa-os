@@ -34,6 +34,8 @@ use super::speculation::{
 };
 use super::escape::{EscapeScalarPass, EscapeConfig, EscapePassResult};
 use super::loop_opt::{LoopOptPass, LoopOptConfig, LoopOptResult};
+use super::isa_opt::{IsaOptPass, IsaOptConfig, IsaOptResult};
+use super::nready::InstructionSets;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -82,6 +84,10 @@ pub struct S2Config {
     pub advanced_loop_opts: bool,
     /// Loop optimization configuration
     pub loop_opt_config: LoopOptConfig,
+    /// Enable ISA-aware optimization
+    pub isa_optimization: bool,
+    /// ISA optimization configuration
+    pub isa_opt_config: IsaOptConfig,
 }
 
 impl Default for S2Config {
@@ -108,6 +114,8 @@ impl Default for S2Config {
             escape_config: EscapeConfig::default(),
             advanced_loop_opts: true,
             loop_opt_config: LoopOptConfig::default(),
+            isa_optimization: true,
+            isa_opt_config: IsaOptConfig::default(),
         }
     }
 }
@@ -153,6 +161,8 @@ pub struct OptStats {
     pub escape_result: Option<EscapePassResult>,
     /// Loop optimization results
     pub loop_opt_result: Option<LoopOptResult>,
+    /// ISA optimization results
+    pub isa_opt_result: Option<IsaOptResult>,
 }
 
 /// S2 optimizing compiler
@@ -291,6 +301,26 @@ impl S2Compiler {
         } else {
             Vec::new()
         };
+        
+        // ====================================================================
+        // Phase 5: ISA-Aware Optimization (Enterprise)
+        // ====================================================================
+        // Run after other optimizations to ensure optimal ISA usage
+        // This pass:
+        // - Recognizes patterns for BMI1/BMI2 instructions
+        // - Optimizes vector widths for available SIMD (AVX-512/AVX/SSE)
+        // - Transforms mul+add to FMA where beneficial
+        // - Tracks required ISA for codegen
+        if self.config.isa_optimization {
+            let isa_pass = IsaOptPass::with_config(self.config.isa_opt_config.clone());
+            let isa_result = isa_pass.run(&mut ir);
+            log::debug!(
+                "[S2] ISA optimization: speedup={:.2}x, required={:?}",
+                isa_result.estimated_speedup,
+                isa_result.required_isa.to_string_list()
+            );
+            stats.isa_opt_result = Some(isa_result);
+        }
         
         // Dead code elimination after all opts
         self.dead_code_elim(&mut ir);

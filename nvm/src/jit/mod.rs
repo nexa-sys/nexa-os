@@ -71,6 +71,7 @@ pub mod speculation;
 pub mod escape;
 pub mod loop_opt;
 pub mod block_manager;
+pub mod isa_opt;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
@@ -92,6 +93,7 @@ pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompileP
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
 pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
 pub use block_manager::{BlockManager, UnifiedBlock, IsaCodegenConfig, IsaCodeGen, IsaOpCategory, IrOpStats, IsaUpgradeEvaluator, UpgradeDecision, UpgradeReason};
+pub use isa_opt::{IsaOptPass, IsaOptConfig, IsaOptResult, S1IsaPass};
 
 // Deoptimization and speculation exports
 pub use deopt::{DeoptManager, DeoptGuard, DeoptReason, DeoptState, DeoptStatsSnapshot, GuardKind, RegMapping, DeoptMetadata};
