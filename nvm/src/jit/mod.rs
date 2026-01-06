@@ -1666,6 +1666,7 @@ impl JitEngine {
                         guest_checksum: block_info.guest_checksum,
                         exec_count: block_info.exec_count,
                         ir_data: None, // TODO: serialize IR if available
+                        opt_meta: None, // TODO: serialize optimization metadata if available
                     };
                     
                     match nready.evict_block(&evictable) {

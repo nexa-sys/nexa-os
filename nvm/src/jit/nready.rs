@@ -17,6 +17,34 @@
 //!    - Same-generation only (version must match exactly)
 //!    - Largest size, instant load (mmap)
 //!    - Zero warmup - execute immediately
+//!
+//! 4. **Optimization Metadata** (NEW) - Escape analysis + loop optimization results
+//!    - Backward compatible (like RI)
+//!    - Allows skipping expensive re-analysis on restoration
+//!    - Stored per-block with native code during eviction
+//!
+//! ## NReady! vs ZingJVM ReadyNow! Architecture
+//!
+//! | Feature | NVM NReady! | ZingJVM ReadyNow! |
+//! |---------|-------------|-------------------|
+//! | **Profile Data** | Full forward/backward compat | Forward compatible only |
+//! | **IR Persistence** | ✓ (NVRI format) | ✗ |
+//! | **Optimization Metadata** | ✓ (escape + loop results) | ✗ |
+//! | **Per-Block Eviction** | ✓ (with optimization metadata) | Batch eviction only |
+//! | **Hot Block Restoration** | Native + IR + Opt metadata | Native only, reanalyze |
+//! | **Cache Hierarchy** | Profile → IR → Native | Profile → Native |
+//!
+//! ## Eviction Integration
+//!
+//! When CodeCache is full, blocks are evicted using the smart eviction policy:
+//! - S2 blocks: Always preserved to disk with native + IR + optimization metadata
+//! - S1 blocks: Preserved if exec_count >= threshold, otherwise discarded
+//!
+//! On restoration (cache miss for evicted block):
+//! 1. Check EvictedIndex for block metadata
+//! 2. Load from disk: native code (if version matches) + IR + opt metadata
+//! 3. If native valid: direct load, reuse optimization results
+//! 4. If native stale: recompile from IR, skip escape/loop analysis using opt metadata
 
 use std::collections::HashMap;
 use std::io::{Read, Write, Cursor};
@@ -27,6 +55,8 @@ use super::{JitResult, JitError};
 use super::ir::{IrBlock, IrBasicBlock, IrInstr, IrOp, VReg, ExitReason, IrFlags, BlockId};
 use super::profile::ProfileDb;
 use super::cache::{CompiledBlock, CompileTier, compute_checksum};
+use super::escape::{EscapePassResult, EscapeStats, ScalarReplaceStats};
+use super::loop_opt::{LoopOptResult, LoopStats, LicmStats, IvOptStats, UnrollStats};
 use std::sync::atomic::AtomicU64;
 
 /// NReady! cache version
@@ -40,6 +70,9 @@ pub const RI_MAGIC: &[u8; 4] = b"NVRI";
 
 /// Native code format magic
 pub const NATIVE_MAGIC: &[u8; 4] = b"NVNC";
+
+/// Optimization metadata format magic
+pub const OPTMETA_MAGIC: &[u8; 4] = b"NVOM";
 
 /// NReady! cache manager
 pub struct NReadyCache {
@@ -74,6 +107,114 @@ impl Architecture {
             1 => Some(Architecture::Aarch64),
             _ => None,
         }
+    }
+}
+
+// ============================================================================
+// Block Optimization Metadata
+// ============================================================================
+//
+// Persists escape analysis and loop optimization results per block.
+// This allows skipping expensive re-analysis when blocks are restored.
+
+/// Block optimization metadata for NReady! persistence
+/// 
+/// Contains escape analysis and loop optimization results that can be
+/// restored alongside native code, avoiding expensive re-analysis.
+#[derive(Debug, Clone, Default)]
+pub struct BlockOptMeta {
+    /// Guest RIP
+    pub rip: u64,
+    /// Escape analysis result (if performed)
+    pub escape_result: Option<EscapePassResult>,
+    /// Loop optimization result (if performed)
+    pub loop_result: Option<LoopOptResult>,
+}
+
+impl BlockOptMeta {
+    /// Serialize to bytes
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(128);
+        
+        // RIP (8 bytes)
+        data.extend_from_slice(&self.rip.to_le_bytes());
+        
+        // Flags: bit0 = has_escape, bit1 = has_loop
+        let flags: u8 = (self.escape_result.is_some() as u8)
+            | ((self.loop_result.is_some() as u8) << 1);
+        data.push(flags);
+        
+        // Escape result (if present)
+        if let Some(ref escape) = self.escape_result {
+            let escape_data = escape.serialize();
+            data.extend_from_slice(&(escape_data.len() as u16).to_le_bytes());
+            data.extend(escape_data);
+        }
+        
+        // Loop result (if present)
+        if let Some(ref loop_opt) = self.loop_result {
+            let loop_data = loop_opt.serialize();
+            data.extend_from_slice(&(loop_data.len() as u16).to_le_bytes());
+            data.extend(loop_data);
+        }
+        
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<(Self, usize)> {
+        if data.len() < 9 {
+            return None;
+        }
+        
+        let rip = u64::from_le_bytes(data[0..8].try_into().ok()?);
+        let flags = data[8];
+        let has_escape = (flags & 1) != 0;
+        let has_loop = (flags & 2) != 0;
+        
+        let mut offset = 9;
+        
+        let escape_result = if has_escape {
+            if offset + 2 > data.len() {
+                return None;
+            }
+            let len = u16::from_le_bytes(data[offset..offset+2].try_into().ok()?) as usize;
+            offset += 2;
+            
+            if offset + len > data.len() {
+                return None;
+            }
+            let result = EscapePassResult::deserialize(&data[offset..offset+len]);
+            offset += len;
+            result
+        } else {
+            None
+        };
+        
+        let loop_result = if has_loop {
+            if offset + 2 > data.len() {
+                return None;
+            }
+            let len = u16::from_le_bytes(data[offset..offset+2].try_into().ok()?) as usize;
+            offset += 2;
+            
+            if offset + len > data.len() {
+                return None;
+            }
+            let result = LoopOptResult::deserialize(&data[offset..offset+len]);
+            offset += len;
+            result
+        } else {
+            None
+        };
+        
+        Some((Self { rip, escape_result, loop_result }, offset))
+    }
+    
+    /// Check if this metadata has any optimizations
+    pub fn has_optimizations(&self) -> bool {
+        self.escape_result.as_ref().map_or(false, |e| e.has_optimizations())
+            || self.loop_result.as_ref().map_or(false, |l| l.has_optimizations())
     }
 }
 
@@ -184,6 +325,104 @@ impl NReadyCache {
     
     fn deopt_path(&self) -> String {
         format!("{}/{}.deopt", self.cache_dir, self.instance_id)
+    }
+    
+    // ========================================================================
+    // Optimization Metadata Persistence
+    // ========================================================================
+    //
+    // Uses BlockOptMeta (defined above) to persist escape analysis and 
+    // loop optimization results per block.
+    //
+    // Format (NVOM):
+    // - Header: magic(4) + version(4) + count(4)
+    // - Per block: rip(8) + flags(1) + [escape_data] + [loop_data]
+    
+    /// Save optimization metadata for multiple blocks
+    pub fn save_opt_meta(&self, blocks: &HashMap<u64, BlockOptMeta>) -> JitResult<()> {
+        let path = self.opt_meta_path();
+        let mut data = Vec::new();
+        
+        // Header
+        data.extend_from_slice(OPTMETA_MAGIC);
+        data.extend_from_slice(&NREADY_VERSION.to_le_bytes());
+        data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+        
+        // Each block's optimization metadata
+        for (_, meta) in blocks {
+            data.extend(meta.serialize());
+        }
+        
+        let mut file = File::create(&path)
+            .map_err(|_| JitError::IoError)?;
+        file.write_all(&data)
+            .map_err(|_| JitError::IoError)?;
+        
+        log::info!("[NReady!] Saved optimization metadata for {} blocks to {} ({} bytes)",
+            blocks.len(), path, data.len());
+        
+        Ok(())
+    }
+    
+    /// Load optimization metadata
+    pub fn load_opt_meta(&self) -> JitResult<HashMap<u64, BlockOptMeta>> {
+        let path = self.opt_meta_path();
+        let mut file = File::open(&path)
+            .map_err(|_| JitError::IoError)?;
+        
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|_| JitError::IoError)?;
+        
+        self.deserialize_opt_meta(&data)
+    }
+    
+    fn deserialize_opt_meta(&self, data: &[u8]) -> JitResult<HashMap<u64, BlockOptMeta>> {
+        if data.len() < 12 {
+            return Err(JitError::InvalidFormat);
+        }
+        
+        if &data[0..4] != OPTMETA_MAGIC {
+            return Err(JitError::InvalidFormat);
+        }
+        
+        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        
+        // Optimization metadata is backward compatible (like RI)
+        if version > NREADY_VERSION {
+            return Err(JitError::IncompatibleVersion);
+        }
+        
+        let count = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let mut offset = 12;
+        let mut blocks = HashMap::new();
+        
+        for _ in 0..count {
+            if offset >= data.len() {
+                break;
+            }
+            
+            if let Some((meta, new_offset)) = BlockOptMeta::deserialize(&data[offset..]) {
+                blocks.insert(meta.rip, meta);
+                offset += new_offset;
+            } else {
+                break;
+            }
+        }
+        
+        log::info!("[NReady!] Loaded optimization metadata for {} blocks from {}",
+            blocks.len(), self.opt_meta_path());
+        
+        Ok(blocks)
+    }
+    
+    /// Check if optimization metadata exists
+    pub fn has_opt_meta(&self) -> bool {
+        Path::new(&self.opt_meta_path()).exists()
+    }
+    
+    fn opt_meta_path(&self) -> String {
+        format!("{}/{}.optmeta", self.cache_dir, self.instance_id)
     }
     
     // ========================================================================
@@ -1355,6 +1594,9 @@ pub struct EvictableBlock {
     pub exec_count: u64,
     /// Optional IR for faster recompilation
     pub ir_data: Option<Vec<u8>>,
+    /// Optional optimization metadata (escape analysis + loop opts)
+    /// Serialized BlockOptMeta - allows skipping re-analysis on restore
+    pub opt_meta: Option<Vec<u8>>,
 }
 
 /// Result of an eviction operation
@@ -1365,6 +1607,7 @@ pub struct EvictionPersistResult {
     pub bytes_written: usize,
     pub has_native: bool,
     pub has_ir: bool,
+    pub has_opt_meta: bool,
 }
 
 impl NReadyCache {
@@ -1376,6 +1619,12 @@ impl NReadyCache {
     /// 
     /// This is used when CodeCache is full and we need to free space.
     /// The block can be restored later if it becomes hot again.
+    /// 
+    /// NVM's eviction differs from ZingJVM's ReadyNow! in key ways:
+    /// - **Hotness-based scoring** with time decay (half-life 60s)
+    /// - **Locality bonus** for call graph neighbors (1.5x multiplier)
+    /// - **Tiered preservation**: S2 always saved, S1 conditionally
+    /// - **Optimization metadata**: Escape/loop results saved to skip re-analysis
     pub fn evict_block(&self, block: &EvictableBlock) -> JitResult<EvictionPersistResult> {
         let path = self.evicted_block_path(block.rip);
         let mut data = Vec::new();
@@ -1385,10 +1634,13 @@ impl NReadyCache {
         data.extend_from_slice(&self.jit_version.to_le_bytes());
         data.push(self.arch.to_u8());
         
-        // Flags: bit0 = has_native, bit1 = has_ir
+        // Flags: bit0 = has_native, bit1 = has_ir, bit2 = has_opt_meta
         let has_native = !block.native_code.is_empty();
         let has_ir = block.ir_data.is_some();
-        let flags: u8 = (has_native as u8) | ((has_ir as u8) << 1);
+        let has_opt_meta = block.opt_meta.is_some();
+        let flags: u8 = (has_native as u8) 
+            | ((has_ir as u8) << 1)
+            | ((has_opt_meta as u8) << 2);
         data.push(flags);
         data.extend_from_slice(&[0, 0]); // Padding
         
@@ -1417,14 +1669,20 @@ impl NReadyCache {
             data.extend_from_slice(ir);
         }
         
+        // Optimization metadata (if present) - allows skipping escape/loop re-analysis
+        if let Some(ref opt) = block.opt_meta {
+            data.extend_from_slice(&(opt.len() as u32).to_le_bytes());
+            data.extend_from_slice(opt);
+        }
+        
         // Write to disk
         let mut file = File::create(&path)
             .map_err(|_| JitError::IoError)?;
         file.write_all(&data)
             .map_err(|_| JitError::IoError)?;
         
-        log::debug!("[NReady!] Evicted block {:#x} to {} ({} bytes, native={}, ir={})",
-            block.rip, path, data.len(), has_native, has_ir);
+        log::debug!("[NReady!] Evicted block {:#x} to {} ({} bytes, native={}, ir={}, opt_meta={})",
+            block.rip, path, data.len(), has_native, has_ir, has_opt_meta);
         
         Ok(EvictionPersistResult {
             rip: block.rip,
@@ -1432,12 +1690,14 @@ impl NReadyCache {
             bytes_written: data.len(),
             has_native,
             has_ir,
+            has_opt_meta,
         })
     }
     
     /// Restore a previously evicted block from disk
     /// 
     /// Returns the block data if found and compatible, None otherwise.
+    /// Includes optimization metadata for faster recompilation.
     pub fn restore_block(&self, rip: u64) -> JitResult<Option<RestoredBlock>> {
         let path = self.evicted_block_path(rip);
         
@@ -1469,6 +1729,7 @@ impl NReadyCache {
         let flags = data[9];
         let has_native = (flags & 1) != 0;
         let has_ir = (flags & 2) != 0;
+        let has_opt_meta = (flags & 4) != 0;
         
         // Parse metadata
         let mut offset = 12;
@@ -1536,7 +1797,9 @@ impl NReadyCache {
                 offset += 4;
                 
                 if offset + ir_len <= data.len() {
-                    Some(data[offset..offset+ir_len].to_vec())
+                    let ir = data[offset..offset+ir_len].to_vec();
+                    offset += ir_len;
+                    Some(ir)
                 } else {
                     None
                 }
@@ -1545,8 +1808,32 @@ impl NReadyCache {
             None
         };
         
-        log::debug!("[NReady!] Restored block {:#x} from {} (native={}, ir={})",
-            rip, path, native_code.is_some(), ir_data.is_some());
+        // Parse optimization metadata (backward compatible - can reuse across versions)
+        let opt_meta = if has_opt_meta {
+            if offset + 4 > data.len() {
+                None
+            } else {
+                let opt_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+                offset += 4;
+                
+                if offset + opt_len <= data.len() {
+                    // Parse into BlockOptMeta for validation
+                    let opt_data = &data[offset..offset+opt_len];
+                    if let Some((meta, _)) = BlockOptMeta::deserialize(opt_data) {
+                        Some(meta)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
+        log::debug!("[NReady!] Restored block {:#x} from {} (native={}, ir={}, opt_meta={})",
+            rip, path, native_code.is_some(), ir_data.is_some(), opt_meta.is_some());
         
         // Optionally delete the eviction file after successful restore
         let _ = std::fs::remove_file(&path);
@@ -1560,6 +1847,7 @@ impl NReadyCache {
             exec_count,
             native_code,
             ir_data,
+            opt_meta,
         }))
     }
     
@@ -1645,6 +1933,11 @@ impl NReadyCache {
 }
 
 /// A block restored from disk eviction
+/// 
+/// Contains all data needed to quickly reintegrate the block into CodeCache:
+/// - **native_code**: Pre-compiled machine code (if version matched)
+/// - **ir_data**: IR for recompilation (if native stale or unavailable)
+/// - **opt_meta**: Escape analysis + loop optimization results to skip re-analysis
 #[derive(Debug)]
 pub struct RestoredBlock {
     pub rip: u64,
@@ -1657,6 +1950,9 @@ pub struct RestoredBlock {
     pub native_code: Option<Vec<u8>>,
     /// IR data (for recompilation if native is stale)
     pub ir_data: Option<Vec<u8>>,
+    /// Optimization metadata (escape analysis + loop optimizations)
+    /// Allows skipping expensive re-analysis on restoration
+    pub opt_meta: Option<BlockOptMeta>,
 }
 
 impl RestoredBlock {
@@ -1668,6 +1964,21 @@ impl RestoredBlock {
     /// Check if this block needs recompilation
     pub fn needs_recompile(&self) -> bool {
         self.native_code.is_none()
+    }
+    
+    /// Check if optimization metadata is available
+    pub fn has_opt_meta(&self) -> bool {
+        self.opt_meta.is_some()
+    }
+    
+    /// Get escape analysis result if available
+    pub fn escape_result(&self) -> Option<&EscapePassResult> {
+        self.opt_meta.as_ref().and_then(|m| m.escape_result.as_ref())
+    }
+    
+    /// Get loop optimization result if available
+    pub fn loop_result(&self) -> Option<&LoopOptResult> {
+        self.opt_meta.as_ref().and_then(|m| m.loop_result.as_ref())
     }
 }
 

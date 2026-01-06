@@ -6,6 +6,35 @@
 //! 3. Tiers eviction: S2→disk (preserve), S1→optional disk (semi-preserve)
 //! 4. Restores cold-turned-hot blocks from disk
 //!
+//! ## NVM vs ZingJVM/ReadyNow! Eviction Strategies
+//!
+//! NVM's eviction differs fundamentally from ZingJVM's ReadyNow!:
+//!
+//! | Aspect | NVM NReady! | ZingJVM ReadyNow! |
+//! |--------|-------------|-------------------|
+//! | **Hotness Metric** | Time-decayed score with half-life (60s) | Static execution count |
+//! | **Locality** | Call graph tracking (1.5x bonus for hot neighbors) | No locality awareness |
+//! | **Eviction Priority** | Score-based with tier preference (S1 before S2) | LRU-style |
+//! | **S2 Preservation** | Always saved to disk with optimization metadata | Native-only preservation |
+//! | **Restoration** | Includes escape analysis + loop opt results | Recompile from scratch |
+//! | **Memory Pressure** | Dynamic cache expansion before eviction | Fixed capacity |
+//!
+//! ### Key Differences Explained
+//!
+//! 1. **Hotness Decay**: NVM uses `Score = exec_count * 2^(-time/half_life) * locality_bonus`.
+//!    A block executed 1000 times 2 minutes ago has lower score than one executed
+//!    100 times 30 seconds ago. ZingJVM uses raw execution counts.
+//!
+//! 2. **Locality Bonus**: NVM tracks call edges. If a block's callers/callees are hot,
+//!    it gets a 1.5x score boost. This keeps hot call chains in cache together.
+//!
+//! 3. **Optimization Metadata Preservation**: When NVM evicts an S2 block, it saves
+//!    escape analysis and loop optimization results. On restoration, these are
+//!    reused to skip expensive re-analysis. ZingJVM must reanalyze from scratch.
+//!
+//! 4. **Dynamic Expansion**: NVM tries to expand the CodeCache before evicting.
+//!    Only when the hard limit is reached does eviction occur.
+//!
 //! ## Eviction Strategy
 //!
 //! ```text
@@ -38,7 +67,7 @@
 //! │  │                    Restoration on Re-heat                           │   │
 //! │  │                                                                     │   │
 //! │  │  Cache Miss + Block in EvictedIndex → restore_from_disk()          │   │
-//! │  │  Faster than recompile, preserves profile data                     │   │
+//! │  │  Faster than recompile, preserves profile data + opt metadata      │   │
 //! │  └─────────────────────────────────────────────────────────────────────┘   │
 //! └─────────────────────────────────────────────────────────────────────────────┘
 //! ```

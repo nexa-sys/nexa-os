@@ -245,6 +245,35 @@ pub struct EscapeStats {
     pub bytes_saved: usize,
 }
 
+impl EscapeStats {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(24);
+        data.extend_from_slice(&self.total_allocations.to_le_bytes());
+        data.extend_from_slice(&self.no_escape.to_le_bytes());
+        data.extend_from_slice(&self.arg_escape.to_le_bytes());
+        data.extend_from_slice(&self.global_escape.to_le_bytes());
+        data.extend_from_slice(&self.scalar_replaceable.to_le_bytes());
+        data.extend_from_slice(&(self.bytes_saved as u32).to_le_bytes());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 24 {
+            return None;
+        }
+        Some(Self {
+            total_allocations: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            no_escape: u32::from_le_bytes(data[4..8].try_into().ok()?),
+            arg_escape: u32::from_le_bytes(data[8..12].try_into().ok()?),
+            global_escape: u32::from_le_bytes(data[12..16].try_into().ok()?),
+            scalar_replaceable: u32::from_le_bytes(data[16..20].try_into().ok()?),
+            bytes_saved: u32::from_le_bytes(data[20..24].try_into().ok()?) as usize,
+        })
+    }
+}
+
 /// Escape analyzer
 pub struct EscapeAnalyzer {
     config: EscapeConfig,
@@ -774,6 +803,31 @@ pub struct ScalarReplaceStats {
     pub bytes_saved: usize,
 }
 
+impl ScalarReplaceStats {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(16);
+        data.extend_from_slice(&self.allocations_replaced.to_le_bytes());
+        data.extend_from_slice(&self.allocations_eliminated.to_le_bytes());
+        data.extend_from_slice(&self.fields_created.to_le_bytes());
+        data.extend_from_slice(&(self.bytes_saved as u32).to_le_bytes());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 16 {
+            return None;
+        }
+        Some(Self {
+            allocations_replaced: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            allocations_eliminated: u32::from_le_bytes(data[4..8].try_into().ok()?),
+            fields_created: u32::from_le_bytes(data[8..12].try_into().ok()?),
+            bytes_saved: u32::from_le_bytes(data[12..16].try_into().ok()?) as usize,
+        })
+    }
+}
+
 // ============================================================================
 // Integration with S2 Compiler
 // ============================================================================
@@ -825,6 +879,32 @@ impl Default for EscapeScalarPass {
 pub struct EscapePassResult {
     pub escape_stats: EscapeStats,
     pub replace_stats: ScalarReplaceStats,
+}
+
+impl EscapePassResult {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(44);
+        data.extend(self.escape_stats.serialize());
+        data.extend(self.replace_stats.serialize());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 40 {
+            return None;
+        }
+        Some(Self {
+            escape_stats: EscapeStats::deserialize(&data[0..24])?,
+            replace_stats: ScalarReplaceStats::deserialize(&data[24..40])?,
+        })
+    }
+    
+    /// Check if escape analysis produced useful optimizations
+    pub fn has_optimizations(&self) -> bool {
+        self.escape_stats.scalar_replaceable > 0 || self.replace_stats.allocations_replaced > 0
+    }
 }
 
 #[cfg(test)]

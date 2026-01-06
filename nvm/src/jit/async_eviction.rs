@@ -136,6 +136,7 @@ impl EvictingBlock {
             guest_checksum: self.guest_checksum,
             exec_count: self.exec_count,
             ir_data: self.ir_data.clone(),
+            opt_meta: None, // TODO: preserve optimization metadata
         }
     }
 }
@@ -606,6 +607,7 @@ fn process_eviction_candidate(
             guest_checksum: 0,
             exec_count: candidate.exec_count,
             ir_data: None,
+            opt_meta: None,
         };
         
         match nready.evict_block(&evictable) {

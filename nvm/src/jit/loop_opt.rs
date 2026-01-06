@@ -122,6 +122,31 @@ pub struct LoopStats {
     pub max_depth: u32,
 }
 
+impl LoopStats {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(16);
+        data.extend_from_slice(&self.total_loops.to_le_bytes());
+        data.extend_from_slice(&self.nested_loops.to_le_bytes());
+        data.extend_from_slice(&self.rep_loops.to_le_bytes());
+        data.extend_from_slice(&self.max_depth.to_le_bytes());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 16 {
+            return None;
+        }
+        Some(Self {
+            total_loops: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            nested_loops: u32::from_le_bytes(data[4..8].try_into().ok()?),
+            rep_loops: u32::from_le_bytes(data[8..12].try_into().ok()?),
+            max_depth: u32::from_le_bytes(data[12..16].try_into().ok()?),
+        })
+    }
+}
+
 /// Loop analyzer
 pub struct LoopAnalyzer {
     /// Computed dominators
@@ -686,6 +711,33 @@ pub struct UnrollStats {
     pub bytes_per_iter_increased: usize,
 }
 
+impl UnrollStats {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(20);
+        data.extend_from_slice(&self.loops_unrolled.to_le_bytes());
+        data.extend_from_slice(&self.rep_loops_unrolled.to_le_bytes());
+        data.extend_from_slice(&self.total_unroll_factor.to_le_bytes());
+        data.extend_from_slice(&self.instrs_duplicated.to_le_bytes());
+        data.extend_from_slice(&(self.bytes_per_iter_increased as u32).to_le_bytes());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 20 {
+            return None;
+        }
+        Some(Self {
+            loops_unrolled: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            rep_loops_unrolled: u32::from_le_bytes(data[4..8].try_into().ok()?),
+            total_unroll_factor: u32::from_le_bytes(data[8..12].try_into().ok()?),
+            instrs_duplicated: u32::from_le_bytes(data[12..16].try_into().ok()?),
+            bytes_per_iter_increased: u32::from_le_bytes(data[16..20].try_into().ok()?) as usize,
+        })
+    }
+}
+
 // ============================================================================
 // Loop Invariant Code Motion (LICM)
 // ============================================================================
@@ -860,6 +912,27 @@ pub struct LicmStats {
     pub instrs_hoisted: u32,
 }
 
+impl LicmStats {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(8);
+        data.extend_from_slice(&self.loops_optimized.to_le_bytes());
+        data.extend_from_slice(&self.instrs_hoisted.to_le_bytes());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 8 {
+            return None;
+        }
+        Some(Self {
+            loops_optimized: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            instrs_hoisted: u32::from_le_bytes(data[4..8].try_into().ok()?),
+        })
+    }
+}
+
 // ============================================================================
 // Induction Variable Optimization
 // ============================================================================
@@ -1015,6 +1088,29 @@ pub struct IvOptStats {
     pub ivs_eliminated: u32,
 }
 
+impl IvOptStats {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(12);
+        data.extend_from_slice(&self.ivs_detected.to_le_bytes());
+        data.extend_from_slice(&self.strength_reductions.to_le_bytes());
+        data.extend_from_slice(&self.ivs_eliminated.to_le_bytes());
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 12 {
+            return None;
+        }
+        Some(Self {
+            ivs_detected: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            strength_reductions: u32::from_le_bytes(data[4..8].try_into().ok()?),
+            ivs_eliminated: u32::from_le_bytes(data[8..12].try_into().ok()?),
+        })
+    }
+}
+
 // ============================================================================
 // Combined Loop Optimization Pass
 // ============================================================================
@@ -1097,6 +1193,38 @@ pub struct LoopOptResult {
     pub licm_stats: LicmStats,
     pub iv_stats: IvOptStats,
     pub unroll_stats: UnrollStats,
+}
+
+impl LoopOptResult {
+    /// Serialize to bytes for NReady! persistence
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(64);
+        data.extend(self.analysis_stats.serialize());  // 16 bytes
+        data.extend(self.licm_stats.serialize());      // 8 bytes
+        data.extend(self.iv_stats.serialize());        // 12 bytes
+        data.extend(self.unroll_stats.serialize());    // 20 bytes
+        data
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 56 {
+            return None;
+        }
+        Some(Self {
+            analysis_stats: LoopStats::deserialize(&data[0..16])?,
+            licm_stats: LicmStats::deserialize(&data[16..24])?,
+            iv_stats: IvOptStats::deserialize(&data[24..36])?,
+            unroll_stats: UnrollStats::deserialize(&data[36..56])?,
+        })
+    }
+    
+    /// Check if loop optimizations produced useful results
+    pub fn has_optimizations(&self) -> bool {
+        self.unroll_stats.loops_unrolled > 0 
+            || self.licm_stats.instrs_hoisted > 0 
+            || self.iv_stats.strength_reductions > 0
+    }
 }
 
 // ============================================================================
