@@ -1,55 +1,49 @@
 //! NReady! Persistence
 //!
 //! Pre-warm JIT cache from persisted data for instant startup.
-//! Three persistence formats with different compatibility guarantees:
 //!
-//! 1. **Profile** - Runtime profiling data (branch stats, call targets, hot blocks)
+//! ## Directory Structure (v2)
+//!
+//! ```text
+//! nready/
+//!   {vm_name}/                    # Per-VM isolation
+//!     profile.nvmp                # Runtime profiling data
+//!     deopt.nvmd                  # Deoptimization state
+//!     ir/                         # IR cache (platform-neutral)
+//!       {rip_hex}.ir              # Per-block IR
+//!     native/                     # Native code cache (platform-specific)
+//!       index.bin                 # B+ tree index
+//!       {prefix}/                 # Sharded by RIP prefix (like git objects)
+//!         {rip_hex}.bin           # Per-block native code
+//! ```
+//!
+//! ## Persistence Formats
+//!
+//! 1. **Profile** - Runtime profiling data (branch stats, hot blocks)
 //!    - Full forward AND backward compatibility
 //!    - Small size, fast to load
-//!    - Used to guide JIT compilation decisions
 //!
-//! 2. **RI (Runtime Intermediate)** - Platform-neutral IR representation
-//!    - Backward compatible (old RI works on new JIT)
-//!    - Medium size, moderate load time
-//!    - Skip decoding, go straight to optimization
+//! 2. **IR** - Platform-neutral intermediate representation
+//!    - Backward compatible (old IR works on new JIT)
+//!    - Per-block files for fine-grained management
 //!
 //! 3. **Native Code** - Pre-compiled machine code
-//!    - Same-generation only (version must match exactly)
-//!    - Largest size, instant load (mmap)
-//!    - Zero warmup - execute immediately
+//!    - Per-block files with instruction set requirements
+//!    - Platform + instruction set validation on load
 //!
-//! 4. **Optimization Metadata** (NEW) - Escape analysis + loop optimization results
-//!    - Backward compatible (like RI)
-//!    - Allows skipping expensive re-analysis on restoration
-//!    - Stored per-block with native code during eviction
+//! ## Instruction Set Tracking
 //!
-//! ## NReady! vs ZingJVM ReadyNow! Architecture
+//! Each native code block records which instruction sets it uses:
+//! - SSE2, SSE4.1, SSE4.2 (baseline for x86_64)
+//! - AVX, AVX2, AVX-512
+//! - BMI1, BMI2, POPCNT, LZCNT
 //!
-//! | Feature | NVM NReady! | ZingJVM ReadyNow! |
-//! |---------|-------------|-------------------|
-//! | **Profile Data** | Full forward/backward compat | Forward compatible only |
-//! | **IR Persistence** | ✓ (NVRI format) | ✗ |
-//! | **Optimization Metadata** | ✓ (escape + loop results) | ✗ |
-//! | **Per-Block Eviction** | ✓ (with optimization metadata) | Batch eviction only |
-//! | **Hot Block Restoration** | Native + IR + Opt metadata | Native only, reanalyze |
-//! | **Cache Hierarchy** | Profile → IR → Native | Profile → Native |
-//!
-//! ## Eviction Integration
-//!
-//! When CodeCache is full, blocks are evicted using the smart eviction policy:
-//! - S2 blocks: Always preserved to disk with native + IR + optimization metadata
-//! - S1 blocks: Preserved if exec_count >= threshold, otherwise discarded
-//!
-//! On restoration (cache miss for evicted block):
-//! 1. Check EvictedIndex for block metadata
-//! 2. Load from disk: native code (if version matches) + IR + opt metadata
-//! 3. If native valid: direct load, reuse optimization results
-//! 4. If native stale: recompile from IR, skip escape/loop analysis using opt metadata
+//! On load, we verify the current CPU supports ALL required instruction sets.
 
 use std::collections::HashMap;
 use std::io::{Read, Write, Cursor};
 use std::path::Path;
-use std::fs::File;
+use std::fs::{self, File};
 
 use super::{JitResult, JitError};
 use super::ir::{IrBlock, IrBasicBlock, IrInstr, IrOp, VReg, ExitReason, IrFlags, BlockId};
@@ -58,6 +52,114 @@ use super::cache::{CompiledBlock, CompileTier, compute_checksum};
 use super::escape::{EscapePassResult, EscapeStats, ScalarReplaceStats};
 use super::loop_opt::{LoopOptResult, LoopStats, LicmStats, IvOptStats, UnrollStats};
 use std::sync::atomic::AtomicU64;
+
+// ============================================================================
+// Instruction Set Definitions
+// ============================================================================
+
+bitflags::bitflags! {
+    /// CPU instruction set flags
+    /// 
+    /// Each compiled block records which instruction sets it uses.
+    /// On load, we verify the current CPU supports all required sets.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct InstructionSets: u64 {
+        /// SSE2 - baseline for x86_64
+        const SSE2     = 1 << 0;
+        /// SSE4.1 - PINSRB, PEXTRB, ROUNDPS, etc.
+        const SSE4_1   = 1 << 1;
+        /// SSE4.2 - CRC32, PCMPESTRI, etc.
+        const SSE4_2   = 1 << 2;
+        /// AVX - 256-bit vectors, VEX encoding
+        const AVX      = 1 << 3;
+        /// AVX2 - 256-bit integer SIMD
+        const AVX2     = 1 << 4;
+        /// AVX-512F - 512-bit vectors (foundation)
+        const AVX512F  = 1 << 5;
+        /// AVX-512VL - 128/256-bit AVX-512
+        const AVX512VL = 1 << 6;
+        /// BMI1 - ANDN, BEXTR, BLSI, etc.
+        const BMI1     = 1 << 7;
+        /// BMI2 - BZHI, PDEP, PEXT, etc.
+        const BMI2     = 1 << 8;
+        /// POPCNT - population count
+        const POPCNT   = 1 << 9;
+        /// LZCNT - leading zero count
+        const LZCNT    = 1 << 10;
+        /// FMA - fused multiply-add
+        const FMA      = 1 << 11;
+        /// AES-NI - AES encryption instructions
+        const AESNI    = 1 << 12;
+        /// PCLMULQDQ - carryless multiplication
+        const PCLMUL   = 1 << 13;
+        /// MOVBE - big-endian move
+        const MOVBE    = 1 << 14;
+        /// F16C - half-precision conversion
+        const F16C     = 1 << 15;
+    }
+}
+
+impl InstructionSets {
+    /// Detect supported instruction sets on current CPU
+    pub fn detect_current() -> Self {
+        let mut sets = Self::empty();
+        
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("sse2") { sets |= Self::SSE2; }
+            if is_x86_feature_detected!("sse4.1") { sets |= Self::SSE4_1; }
+            if is_x86_feature_detected!("sse4.2") { sets |= Self::SSE4_2; }
+            if is_x86_feature_detected!("avx") { sets |= Self::AVX; }
+            if is_x86_feature_detected!("avx2") { sets |= Self::AVX2; }
+            if is_x86_feature_detected!("avx512f") { sets |= Self::AVX512F; }
+            if is_x86_feature_detected!("avx512vl") { sets |= Self::AVX512VL; }
+            if is_x86_feature_detected!("bmi1") { sets |= Self::BMI1; }
+            if is_x86_feature_detected!("bmi2") { sets |= Self::BMI2; }
+            if is_x86_feature_detected!("popcnt") { sets |= Self::POPCNT; }
+            if is_x86_feature_detected!("lzcnt") { sets |= Self::LZCNT; }
+            if is_x86_feature_detected!("fma") { sets |= Self::FMA; }
+            if is_x86_feature_detected!("aes") { sets |= Self::AESNI; }
+            if is_x86_feature_detected!("pclmulqdq") { sets |= Self::PCLMUL; }
+            if is_x86_feature_detected!("movbe") { sets |= Self::MOVBE; }
+            if is_x86_feature_detected!("f16c") { sets |= Self::F16C; }
+        }
+        
+        #[cfg(target_arch = "aarch64")]
+        {
+            // ARM NEON is always available on AArch64
+            sets |= Self::SSE2; // Use SSE2 flag for NEON baseline
+        }
+        
+        sets
+    }
+    
+    /// Check if current CPU supports all required instruction sets
+    pub fn supports(&self, required: InstructionSets) -> bool {
+        self.contains(required)
+    }
+    
+    /// Get human-readable list of instruction sets
+    pub fn to_string_list(&self) -> Vec<&'static str> {
+        let mut list = Vec::new();
+        if self.contains(Self::SSE2) { list.push("SSE2"); }
+        if self.contains(Self::SSE4_1) { list.push("SSE4.1"); }
+        if self.contains(Self::SSE4_2) { list.push("SSE4.2"); }
+        if self.contains(Self::AVX) { list.push("AVX"); }
+        if self.contains(Self::AVX2) { list.push("AVX2"); }
+        if self.contains(Self::AVX512F) { list.push("AVX-512F"); }
+        if self.contains(Self::AVX512VL) { list.push("AVX-512VL"); }
+        if self.contains(Self::BMI1) { list.push("BMI1"); }
+        if self.contains(Self::BMI2) { list.push("BMI2"); }
+        if self.contains(Self::POPCNT) { list.push("POPCNT"); }
+        if self.contains(Self::LZCNT) { list.push("LZCNT"); }
+        if self.contains(Self::FMA) { list.push("FMA"); }
+        if self.contains(Self::AESNI) { list.push("AES-NI"); }
+        if self.contains(Self::PCLMUL) { list.push("PCLMUL"); }
+        if self.contains(Self::MOVBE) { list.push("MOVBE"); }
+        if self.contains(Self::F16C) { list.push("F16C"); }
+        list
+    }
+}
 
 /// NReady! cache version
 /// 
@@ -95,27 +197,37 @@ pub struct PlatformInfo {
     pub jit_version: u32,
     pub arch: Architecture,
     pub os: OperatingSystem,
-    pub cpu_features: u64,  // Bitmask of required CPU features
+    /// Supported instruction sets on current CPU
+    pub supported_isa: InstructionSets,
 }
 
 impl PlatformInfo {
     /// Create PlatformInfo for current host
     pub fn current() -> Self {
+        let supported_isa = InstructionSets::detect_current();
+        log::info!("[NReady!] Detected CPU instruction sets: {:?}", 
+            supported_isa.to_string_list());
+        
         Self {
             jit_version: NREADY_VERSION,
             arch: Architecture::current(),
             os: OperatingSystem::current(),
-            cpu_features: detect_cpu_features(),
+            supported_isa,
         }
     }
     
-    /// Check if this platform info is compatible with native code
+    /// Check if a block's required instruction sets are supported
+    pub fn supports_isa(&self, required: InstructionSets) -> bool {
+        self.supported_isa.contains(required)
+    }
+    
+    /// Check if this platform is compatible for loading native code
+    /// Note: Per-block ISA check is done separately in load_native_block()
     pub fn is_compatible(&self, other: &PlatformInfo) -> bool {
         self.jit_version == other.jit_version
             && self.arch == other.arch
             && self.os == other.os
-            // CPU features: cached code must not use features we don't have
-            && (other.cpu_features & !self.cpu_features) == 0
+        // Note: ISA compatibility is checked per-block, not globally
     }
     
     /// Serialize to bytes (16 bytes)
@@ -125,7 +237,7 @@ impl PlatformInfo {
         buf[4] = self.arch.to_u8();
         buf[5] = self.os.to_u8();
         buf[6..8].copy_from_slice(&[0, 0]); // padding
-        buf[8..16].copy_from_slice(&self.cpu_features.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.supported_isa.bits().to_le_bytes());
         buf
     }
     
@@ -138,7 +250,9 @@ impl PlatformInfo {
             jit_version: u32::from_le_bytes(data[0..4].try_into().ok()?),
             arch: Architecture::from_u8(data[4])?,
             os: OperatingSystem::from_u8(data[5])?,
-            cpu_features: u64::from_le_bytes(data[8..16].try_into().ok()?),
+            supported_isa: InstructionSets::from_bits_truncate(
+                u64::from_le_bytes(data[8..16].try_into().ok()?)
+            ),
         })
     }
 }
@@ -184,35 +298,105 @@ impl OperatingSystem {
     }
 }
 
-/// Detect CPU features used by JIT codegen
-fn detect_cpu_features() -> u64 {
-    let mut features = 0u64;
-    
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Use CPUID to detect features
-        if is_x86_feature_detected!("sse2") { features |= 1 << 0; }
-        if is_x86_feature_detected!("sse4.1") { features |= 1 << 1; }
-        if is_x86_feature_detected!("sse4.2") { features |= 1 << 2; }
-        if is_x86_feature_detected!("avx") { features |= 1 << 3; }
-        if is_x86_feature_detected!("avx2") { features |= 1 << 4; }
-        if is_x86_feature_detected!("bmi1") { features |= 1 << 5; }
-        if is_x86_feature_detected!("bmi2") { features |= 1 << 6; }
-        if is_x86_feature_detected!("popcnt") { features |= 1 << 7; }
-        if is_x86_feature_detected!("lzcnt") { features |= 1 << 8; }
-    }
-    
-    features
-}
+// ============================================================================
+// NReady! Cache Manager (v2 - Per-VM Directory Structure)
+// ============================================================================
 
 /// NReady! cache manager
+/// 
+/// Directory structure:
+/// ```text
+/// {base_dir}/
+///   {vm_name}/
+///     profile.nvmp        # Runtime profiling data
+///     deopt.nvmd          # Deoptimization state
+///     ir/                 # IR cache (per-block files)
+///       {rip_hex}.ir
+///     native/             # Native code cache (sharded)
+///       index.json        # Block index (RIP → metadata)
+///       {prefix}/         # Sharded by first 2 hex digits of RIP
+///         {rip_hex}.bin   # Native code with ISA requirements
+/// ```
 pub struct NReadyCache {
-    /// Base directory for cache files
-    cache_dir: String,
-    /// VM instance ID (for isolation)
-    instance_id: String,
+    /// Base directory for all VMs
+    base_dir: String,
+    /// VM name (for directory isolation)
+    vm_name: String,
     /// Current platform info
     platform: PlatformInfo,
+}
+
+/// Native block file header (per-block)
+#[derive(Clone, Debug)]
+pub struct NativeBlockHeader {
+    /// Magic: "NVNB"
+    pub magic: [u8; 4],
+    /// JIT version when compiled
+    pub jit_version: u32,
+    /// Required instruction sets (bitmask)
+    pub required_isa: InstructionSets,
+    /// Compile tier (S1/S2)
+    pub tier: CompileTier,
+    /// Guest code size
+    pub guest_size: u32,
+    /// Native code size
+    pub host_size: u32,
+    /// Guest instruction count
+    pub guest_instrs: u32,
+    /// Guest code checksum
+    pub guest_checksum: u64,
+    /// Execution count (for hotness)
+    pub exec_count: u64,
+}
+
+impl NativeBlockHeader {
+    pub const SIZE: usize = 48;
+    pub const MAGIC: [u8; 4] = *b"NVNB"; // NVM Native Block
+    
+    pub fn serialize(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[0..4].copy_from_slice(&Self::MAGIC);
+        buf[4..8].copy_from_slice(&self.jit_version.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.required_isa.bits().to_le_bytes());
+        buf[16] = match self.tier {
+            CompileTier::Interpreter => 0,
+            CompileTier::S1 => 1,
+            CompileTier::S2 => 2,
+        };
+        buf[17..20].copy_from_slice(&[0, 0, 0]); // padding
+        buf[20..24].copy_from_slice(&self.guest_size.to_le_bytes());
+        buf[24..28].copy_from_slice(&self.host_size.to_le_bytes());
+        buf[28..32].copy_from_slice(&self.guest_instrs.to_le_bytes());
+        buf[32..40].copy_from_slice(&self.guest_checksum.to_le_bytes());
+        buf[40..48].copy_from_slice(&self.exec_count.to_le_bytes());
+        buf
+    }
+    
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < Self::SIZE {
+            return None;
+        }
+        if &data[0..4] != &Self::MAGIC {
+            return None;
+        }
+        Some(Self {
+            magic: Self::MAGIC,
+            jit_version: u32::from_le_bytes(data[4..8].try_into().ok()?),
+            required_isa: InstructionSets::from_bits_truncate(
+                u64::from_le_bytes(data[8..16].try_into().ok()?)
+            ),
+            tier: match data[16] {
+                0 => CompileTier::Interpreter,
+                1 => CompileTier::S1,
+                _ => CompileTier::S2,
+            },
+            guest_size: u32::from_le_bytes(data[20..24].try_into().ok()?),
+            host_size: u32::from_le_bytes(data[24..28].try_into().ok()?),
+            guest_instrs: u32::from_le_bytes(data[28..32].try_into().ok()?),
+            guest_checksum: u64::from_le_bytes(data[32..40].try_into().ok()?),
+            exec_count: u64::from_le_bytes(data[40..48].try_into().ok()?),
+        })
+    }
 }
 
 /// Target architecture
@@ -374,26 +558,263 @@ impl BlockOptMeta {
 }
 
 impl NReadyCache {
-    /// Create a new NReady! cache
+    /// Create a new NReady! cache (v2 - per-VM directory structure)
     /// 
-    /// Creates the cache directory if it doesn't exist.
-    pub fn new(cache_dir: &str, instance_id: &str) -> Self {
-        // Ensure cache directory exists
-        if let Err(e) = std::fs::create_dir_all(cache_dir) {
-            log::warn!("[NReady!] Failed to create cache directory '{}': {}", cache_dir, e);
-        } else {
-            log::info!("[NReady!] Cache directory: {}", cache_dir);
+    /// Directory structure:
+    /// ```text
+    /// {base_dir}/{vm_name}/
+    ///   profile.nvmp
+    ///   deopt.nvmd
+    ///   ir/{rip_hex}.ir
+    ///   native/{prefix}/{rip_hex}.bin
+    /// ```
+    pub fn new(base_dir: &str, vm_name: &str) -> Self {
+        let platform = PlatformInfo::current();
+        
+        // Create VM-specific directory structure
+        let vm_dir = format!("{}/{}", base_dir, vm_name);
+        let ir_dir = format!("{}/ir", vm_dir);
+        let native_dir = format!("{}/native", vm_dir);
+        
+        for dir in &[&vm_dir, &ir_dir, &native_dir] {
+            if let Err(e) = fs::create_dir_all(dir) {
+                log::warn!("[NReady!] Failed to create directory '{}': {}", dir, e);
+            }
         }
         
-        let platform = PlatformInfo::current();
-        log::info!("[NReady!] Platform: JIT v{}, {:?}, {:?}, CPU features: {:?}",
-            platform.jit_version, platform.arch, platform.os, platform.cpu_features);
+        log::info!("[NReady!] Cache initialized for VM '{}' at {}", vm_name, vm_dir);
+        log::info!("[NReady!] Platform: JIT v{}, {:?}, {:?}", 
+            platform.jit_version, platform.arch, platform.os);
+        log::info!("[NReady!] Supported ISA: {:?}", platform.supported_isa.to_string_list());
         
         Self {
-            cache_dir: cache_dir.to_string(),
-            instance_id: instance_id.to_string(),
+            base_dir: base_dir.to_string(),
+            vm_name: vm_name.to_string(),
             platform,
         }
+    }
+    
+    // ========================================================================
+    // Directory Path Helpers (v2 Structure)
+    // ========================================================================
+    
+    /// Get VM-specific cache directory
+    fn vm_dir(&self) -> String {
+        format!("{}/{}", self.base_dir, self.vm_name)
+    }
+    
+    /// Get IR cache directory
+    fn ir_dir(&self) -> String {
+        format!("{}/ir", self.vm_dir())
+    }
+    
+    /// Get native code cache directory
+    fn native_dir(&self) -> String {
+        format!("{}/native", self.vm_dir())
+    }
+    
+    /// Get sharded native code path for a block
+    /// Uses first 2 hex digits of RIP as shard prefix (like git objects)
+    fn native_block_path(&self, rip: u64) -> String {
+        let prefix = format!("{:02x}", (rip >> 56) as u8);
+        let shard_dir = format!("{}/{}", self.native_dir(), prefix);
+        
+        // Ensure shard directory exists
+        let _ = fs::create_dir_all(&shard_dir);
+        
+        format!("{}/{:016x}.bin", shard_dir, rip)
+    }
+    
+    /// Get IR block path
+    fn ir_block_path(&self, rip: u64) -> String {
+        format!("{}/{:016x}.ir", self.ir_dir(), rip)
+    }
+    
+    /// Get profile path
+    fn profile_path(&self) -> String {
+        format!("{}/profile.nvmp", self.vm_dir())
+    }
+    
+    /// Get deopt state path
+    fn deopt_path(&self) -> String {
+        format!("{}/deopt.nvmd", self.vm_dir())
+    }
+    
+    // ========================================================================
+    // Per-Block Native Code Persistence (v2)
+    // ========================================================================
+    
+    /// Save a single native code block with ISA requirements
+    pub fn save_native_block(
+        &self, 
+        rip: u64, 
+        native_code: &[u8],
+        required_isa: InstructionSets,
+        tier: CompileTier,
+        guest_size: u32,
+        guest_instrs: u32,
+        guest_checksum: u64,
+        exec_count: u64,
+    ) -> JitResult<()> {
+        let header = NativeBlockHeader {
+            magic: NativeBlockHeader::MAGIC,
+            jit_version: self.platform.jit_version,
+            required_isa,
+            tier,
+            guest_size,
+            host_size: native_code.len() as u32,
+            guest_instrs,
+            guest_checksum,
+            exec_count,
+        };
+        
+        let path = self.native_block_path(rip);
+        let mut file = File::create(&path).map_err(|_| JitError::IoError)?;
+        
+        file.write_all(&header.serialize()).map_err(|_| JitError::IoError)?;
+        file.write_all(native_code).map_err(|_| JitError::IoError)?;
+        
+        log::trace!("[NReady!] Saved native block {:#x} ({} bytes, ISA: {:?})",
+            rip, native_code.len(), required_isa.to_string_list());
+        
+        Ok(())
+    }
+    
+    /// Load a single native code block with ISA validation
+    /// 
+    /// Returns None if:
+    /// - Block doesn't exist
+    /// - JIT version mismatch
+    /// - Current CPU doesn't support required ISA
+    pub fn load_native_block(&self, rip: u64) -> JitResult<Option<NativeBlockInfo>> {
+        let path = self.native_block_path(rip);
+        
+        let mut file = match File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return Ok(None), // Block not cached
+        };
+        
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).map_err(|_| JitError::IoError)?;
+        
+        if data.len() < NativeBlockHeader::SIZE {
+            return Err(JitError::InvalidFormat);
+        }
+        
+        let header = NativeBlockHeader::deserialize(&data)
+            .ok_or(JitError::InvalidFormat)?;
+        
+        // Check JIT version
+        if header.jit_version != self.platform.jit_version {
+            log::debug!("[NReady!] Block {:#x}: JIT version mismatch (cached: {}, current: {})",
+                rip, header.jit_version, self.platform.jit_version);
+            return Ok(None);
+        }
+        
+        // Check ISA compatibility
+        if !self.platform.supports_isa(header.required_isa) {
+            let missing = header.required_isa - self.platform.supported_isa;
+            log::warn!("[NReady!] Block {:#x}: CPU missing required ISA: {:?}",
+                rip, missing.to_string_list());
+            return Ok(None);
+        }
+        
+        let native_code = data[NativeBlockHeader::SIZE..].to_vec();
+        
+        Ok(Some(NativeBlockInfo {
+            guest_rip: rip,
+            guest_size: header.guest_size,
+            host_size: header.host_size,
+            tier: header.tier,
+            guest_instrs: header.guest_instrs,
+            guest_checksum: header.guest_checksum,
+            native_code,
+            exec_count: header.exec_count,
+            required_isa: header.required_isa,
+        }))
+    }
+    
+    /// Save IR block (platform-neutral)
+    pub fn save_ir_block(&self, rip: u64, ir: &IrBlock) -> JitResult<()> {
+        let path = self.ir_block_path(rip);
+        let mut data = Vec::new();
+        
+        // Use existing serialize method
+        self.serialize_ir_block(&mut data, ir)?;
+        
+        let mut file = File::create(&path).map_err(|_| JitError::IoError)?;
+        file.write_all(&data).map_err(|_| JitError::IoError)?;
+        
+        log::trace!("[NReady!] Saved IR block {:#x} ({} bytes)", rip, data.len());
+        Ok(())
+    }
+    
+    /// Load IR block
+    pub fn load_ir_block(&self, rip: u64) -> JitResult<Option<IrBlock>> {
+        let path = self.ir_block_path(rip);
+        
+        let mut file = match File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return Ok(None),
+        };
+        
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).map_err(|_| JitError::IoError)?;
+        
+        // Use existing deserialize method
+        match self.deserialize_ir_block(&data, 0) {
+            Some((block, _)) => Ok(Some(block)),
+            None => Err(JitError::InvalidFormat),
+        }
+    }
+    
+    /// List all cached native block RIPs
+    pub fn list_native_blocks(&self) -> Vec<u64> {
+        let mut rips = Vec::new();
+        let native_dir = self.native_dir();
+        
+        // Iterate through shard directories
+        if let Ok(shards) = fs::read_dir(&native_dir) {
+            for shard in shards.flatten() {
+                if shard.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if let Ok(files) = fs::read_dir(shard.path()) {
+                        for file in files.flatten() {
+                            if let Some(name) = file.file_name().to_str() {
+                                if let Some(hex) = name.strip_suffix(".bin") {
+                                    if let Ok(rip) = u64::from_str_radix(hex, 16) {
+                                        rips.push(rip);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        rips.sort();
+        rips
+    }
+    
+    /// List all cached IR block RIPs
+    pub fn list_ir_blocks(&self) -> Vec<u64> {
+        let mut rips = Vec::new();
+        let ir_dir = self.ir_dir();
+        
+        if let Ok(files) = fs::read_dir(&ir_dir) {
+            for file in files.flatten() {
+                if let Some(name) = file.file_name().to_str() {
+                    if let Some(hex) = name.strip_suffix(".ir") {
+                        if let Ok(rip) = u64::from_str_radix(hex, 16) {
+                            rips.push(rip);
+                        }
+                    }
+                }
+            }
+        }
+        
+        rips.sort();
+        rips
     }
     
     // ========================================================================
@@ -438,10 +859,6 @@ impl NReadyCache {
             .ok_or(JitError::InvalidFormat)
     }
     
-    fn profile_path(&self) -> String {
-        format!("{}/{}.profile", self.cache_dir, self.instance_id)
-    }
-    
     // ========================================================================
     // Deopt State Persistence (for speculation learning)
     // ========================================================================
@@ -479,10 +896,6 @@ impl NReadyCache {
         } else {
             Err(JitError::InvalidFormat)
         }
-    }
-    
-    fn deopt_path(&self) -> String {
-        format!("{}/{}.deopt", self.cache_dir, self.instance_id)
     }
     
     // ========================================================================
@@ -580,7 +993,7 @@ impl NReadyCache {
     }
     
     fn opt_meta_path(&self) -> String {
-        format!("{}/{}.optmeta", self.cache_dir, self.instance_id)
+        format!("{}/optmeta.nvom", self.vm_dir())
     }
     
     // ========================================================================
@@ -1476,7 +1889,7 @@ impl NReadyCache {
     }
     
     fn ri_path(&self) -> String {
-        format!("{}/{}.ri", self.cache_dir, self.instance_id)
+        format!("{}/ri.nvri", self.vm_dir())
     }
     
     // ========================================================================
@@ -1681,6 +2094,8 @@ impl NReadyCache {
                 guest_checksum,
                 native_code,
                 exec_count,
+                // Legacy format doesn't have ISA info, assume baseline SSE2
+                required_isa: InstructionSets::SSE2,
             });
         }
         
@@ -1688,7 +2103,8 @@ impl NReadyCache {
     }
     
     fn native_path(&self) -> String {
-        format!("{}/{}.v{}.native", self.cache_dir, self.instance_id, self.platform.jit_version)
+        // Legacy: single-file native code cache
+        format!("{}/native.v{}.nvnc", self.vm_dir(), self.platform.jit_version)
     }
     
     // ========================================================================
@@ -1732,7 +2148,7 @@ impl NReadyCache {
     }
 }
 
-/// Native block info (without raw pointer)
+/// Native block info (loaded from cache)
 pub struct NativeBlockInfo {
     pub guest_rip: u64,
     pub guest_size: u32,
@@ -1743,6 +2159,8 @@ pub struct NativeBlockInfo {
     pub native_code: Vec<u8>,
     /// Execution count (for preserving hotness info)
     pub exec_count: u64,
+    /// Required instruction sets for this block
+    pub required_isa: InstructionSets,
 }
 
 /// Cache statistics
@@ -2043,18 +2461,18 @@ impl NReadyCache {
     
     /// Get path for an evicted block
     fn evicted_block_path(&self, rip: u64) -> String {
-        format!("{}/evicted/{:016x}.nvev", self.cache_dir, rip)
+        format!("{}/evicted/{:016x}.nvev", self.vm_dir(), rip)
     }
     
     /// Ensure evicted blocks directory exists
     pub fn ensure_evicted_dir(&self) -> JitResult<()> {
-        let dir = format!("{}/evicted", self.cache_dir);
+        let dir = format!("{}/evicted", self.vm_dir());
         std::fs::create_dir_all(&dir).map_err(|_| JitError::IoError)
     }
     
     /// List all evicted block RIPs
     pub fn list_evicted_blocks(&self) -> Vec<u64> {
-        let dir = format!("{}/evicted", self.cache_dir);
+        let dir = format!("{}/evicted", self.vm_dir());
         let mut rips = Vec::new();
         
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -2075,7 +2493,7 @@ impl NReadyCache {
     
     /// Get total size of evicted blocks on disk
     pub fn evicted_disk_usage(&self) -> u64 {
-        let dir = format!("{}/evicted", self.cache_dir);
+        let dir = format!("{}/evicted", self.vm_dir());
         let mut total = 0u64;
         
         if let Ok(entries) = std::fs::read_dir(&dir) {

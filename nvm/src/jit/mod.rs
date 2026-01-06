@@ -85,7 +85,7 @@ pub use compiler_s2::{S2Compiler, S2Config, OptStats};
 pub use codegen::CodeGen;
 pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile, BranchBias, ValueTypeTag, RegisterTypeProfile, RegisterValueProfile, PathProfile, ProfileStats};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
-pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock, BlockOptMeta};
+pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock, BlockOptMeta, InstructionSets, PlatformInfo};
 pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
 pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller, JitCompileCallback};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
@@ -1589,6 +1589,98 @@ impl JitEngine {
         }
         
         recompiled
+    }
+    
+    /// Pre-compile hot blocks from profile by decoding guest memory
+    /// 
+    /// Called during first execution when we have memory access.
+    /// This is the profile → decode → IR → native path.
+    /// 
+    /// # Arguments
+    /// * `memory` - Guest address space for decoding
+    /// * `hot_rips` - Hot block RIPs from profile
+    /// * `ir_cache` - Already loaded IR blocks (skip these)
+    /// 
+    /// # Returns
+    /// Number of blocks compiled
+    pub fn compile_hot_from_memory(
+        &self, 
+        memory: &AddressSpace, 
+        hot_rips: &[u64],
+        ir_cache: &HashMap<u64, IrBlock>,
+    ) -> usize {
+        let mut compiled = 0;
+        
+        // Limit compilation at startup to avoid stall
+        const MAX_COMPILE_AT_STARTUP: usize = 50;
+        
+        for &rip in hot_rips.iter().take(MAX_COMPILE_AT_STARTUP) {
+            // Skip if already have IR cached (was compiled in recompile_from_ir)
+            if ir_cache.contains_key(&rip) {
+                continue;
+            }
+            
+            // Skip if already in code cache
+            if self.code_cache.lookup(rip).is_some() {
+                continue;
+            }
+            
+            // Decode from guest memory → IR → native
+            match self.decode_and_compile(memory, rip) {
+                Ok(_) => {
+                    compiled += 1;
+                    log::trace!("[NReady!] Pre-compiled hot block {:#x} from memory", rip);
+                }
+                Err(e) => {
+                    log::debug!("[NReady!] Failed to pre-compile {:#x}: {:?}", rip, e);
+                }
+            }
+        }
+        
+        if compiled > 0 {
+            log::info!("[NReady!] Pre-compiled {} hot blocks from profile+memory", compiled);
+        }
+        
+        compiled
+    }
+    
+    /// Decode guest code and compile to native (for pre-compilation)
+    fn decode_and_compile(&self, memory: &AddressSpace, rip: u64) -> JitResult<()> {
+        // Fetch guest code bytes
+        let mut guest_code = vec![0u8; 4096]; // Max block size
+        for (i, byte) in guest_code.iter_mut().enumerate() {
+            *byte = memory.read_u8(rip + i as u64);
+        }
+        
+        // Build IR using S1 compiler (includes decoding)
+        let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
+        
+        // Allocate executable memory
+        let host_ptr = self.code_cache.allocate_code(&s1_block.native)
+            .ok_or(JitError::CodeCacheFull)?;
+        
+        // Create CompiledBlock and install
+        let block = CompiledBlock {
+            guest_rip: rip,
+            guest_size: s1_block.guest_size,
+            host_code: host_ptr,
+            host_size: s1_block.native.len() as u32,
+            tier: CompileTier::S1,
+            exec_count: AtomicU64::new(0),
+            last_access: AtomicU64::new(0),
+            guest_instrs: s1_block.ir.blocks.iter().map(|bb| bb.instrs.len()).sum::<usize>() as u32,
+            guest_checksum: 0,
+            depends_on: Vec::new(),
+            invalidated: false,
+        };
+        
+        self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
+        
+        // Update block metadata
+        let meta = self.get_or_create_block(rip);
+        meta.set_tier(ExecutionTier::S1);
+        
+        Ok(())
     }
     
     /// Compile a block directly from cached IR (skip decoding)
