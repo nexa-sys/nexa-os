@@ -1578,6 +1578,59 @@ impl ProfileStats {
     }
 }
 
+// ============================================================================
+// Extended Profile Integration with Scope Analysis
+// ============================================================================
+
+impl ProfileDb {
+    /// Check if a register consistently holds a constant value
+    pub fn is_constant(&self, rip: u64, reg: u8, threshold: f64) -> Option<u64> {
+        self.get_dominant_value(rip, reg, threshold).map(|(val, _)| val)
+    }
+    
+    /// Get hot call targets for potential devirtualization
+    pub fn get_devirt_candidates(&self, min_confidence: f64) -> Vec<(u64, u64, f64)> {
+        let profiles = self.call_profiles.read().unwrap();
+        profiles.iter()
+            .filter_map(|(call_site, profile)| {
+                profile.dominant_target()
+                    .filter(|(_, conf)| *conf >= min_confidence)
+                    .map(|(target, conf)| (*call_site, target, conf))
+            })
+            .collect()
+    }
+    
+    /// Get all hot blocks above threshold, sorted by execution count
+    pub fn get_hot_blocks_sorted(&self, threshold: u64) -> Vec<(u64, u64)> {
+        let counts = self.block_counts.read().unwrap();
+        let mut hot: Vec<_> = counts.iter()
+            .map(|(rip, c)| (*rip, c.load(Ordering::Relaxed)))
+            .filter(|(_, count)| *count >= threshold)
+            .collect();
+        hot.sort_by(|a, b| b.1.cmp(&a.1));
+        hot
+    }
+    
+    /// Get related blocks (blocks that commonly execute together)
+    /// Useful for building compilation regions
+    pub fn get_related_blocks(&self, rip: u64, min_correlation: f64) -> Vec<u64> {
+        // Use path profiles to find blocks that appear together
+        let paths = self.path_profiles.read().unwrap();
+        let mut related = Vec::new();
+        
+        for (entry, profile) in paths.iter() {
+            if *entry == rip {
+                // Get dominant paths from this entry
+                if let Some((conditions, target, conf)) = profile.dominant_path(min_correlation) {
+                    related.push(target);
+                }
+            }
+        }
+        
+        related
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

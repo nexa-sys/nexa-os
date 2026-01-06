@@ -72,6 +72,7 @@ pub mod escape;
 pub mod loop_opt;
 pub mod block_manager;
 pub mod isa_opt;
+pub mod scope;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
@@ -98,6 +99,9 @@ pub use isa_opt::{IsaOptPass, IsaOptConfig, IsaOptResult, S1IsaPass};
 // Deoptimization and speculation exports
 pub use deopt::{DeoptManager, DeoptGuard, DeoptReason, DeoptState, DeoptStatsSnapshot, GuardKind, RegMapping, DeoptMetadata};
 pub use speculation::{SpeculationManager, SpecConfig, SpecStatsSnapshot, BlockSpeculations, TypeSpeculation, ValueSpeculation, BranchSpeculation, CallSpeculation, PathSpeculation, TypeTag, CallSpecKind, PathCondition};
+
+// Scope and dependency graph exports (for advanced optimization)
+pub use scope::{ScopeLevel, ScopeConfig, ScopeBuilder, CompilationScope, DependencyGraph, DependencyKind, DependencyEdge, ScopeProfile, ScopeProfileDb, DependencyStats};
 
 // ============================================================================
 // JIT CPU State - Direct access structure for native code
