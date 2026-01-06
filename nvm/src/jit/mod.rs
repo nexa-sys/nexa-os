@@ -83,7 +83,7 @@ pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
 pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock};
 pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
-pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller};
+pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller, JitCompileCallback};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
 pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
 
@@ -350,7 +350,7 @@ impl From<CacheError> for JitError {
 }
 
 /// Execution tier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ExecutionTier {
     /// Pure interpretation (slowest, zero warmup)
     Interpreter,
@@ -673,8 +673,8 @@ pub struct JitEngine {
     codegen: CodeGen,
     /// Code cache (guest RIP → compiled code)
     code_cache: Arc<CodeCache>,
-    /// Block metadata
-    blocks: RwLock<HashMap<u64, Arc<BlockMeta>>>,
+    /// Block metadata (Arc for sharing with async callback)
+    blocks: Arc<RwLock<HashMap<u64, Arc<BlockMeta>>>>,
     /// Profile database
     profile_db: Arc<ProfileDb>,
     /// NReady! cache
@@ -742,14 +742,21 @@ impl JitEngine {
             config.code_cache_growth_factor,
         ));
         
+        // Create blocks map FIRST (needed for JitCompileCallback)
+        let blocks = Arc::new(RwLock::new(HashMap::new()));
+        
         // Create async compilation infrastructure
         let async_enabled = config.async_compilation;
         let (async_runtime, async_eviction, async_restore) = if async_enabled {
             // Create compiler context for workers
             let compiler_ctx = Arc::new(CompilerContext::new(profile_db.clone()));
             
-            // Create callback that installs to code cache
-            let installer = Arc::new(CodeCacheInstaller::new(code_cache.clone()));
+            // Create enhanced callback that updates BOTH CodeCache AND BlockMeta.tier
+            // This prevents duplicate compilation requests for already-compiled blocks
+            let installer = Arc::new(JitCompileCallback::new(
+                code_cache.clone(),
+                blocks.clone(),
+            ));
             
             // Create async runtime with worker threads
             let mut runtime = AsyncJitRuntime::new(
@@ -757,6 +764,10 @@ impl JitEngine {
                 compiler_ctx,
                 None, // auto-detect worker count
             );
+            
+            // Set code_cache reference for tier-aware deduplication in submit()
+            runtime.set_code_cache(code_cache.clone());
+            
             runtime.start();
             
             // Create async eviction and restore managers (requires NReady!)
@@ -813,7 +824,7 @@ impl JitEngine {
             }),
             codegen: CodeGen::new(),
             code_cache,
-            blocks: RwLock::new(HashMap::new()),
+            blocks,
             profile_db,
             nready,
             hotness_tracker,
@@ -966,12 +977,25 @@ impl JitEngine {
         tier: ExecutionTier,
         block: &BlockMeta,
     ) -> JitResult<ExecuteResult> {
+        let current_tier = block.get_tier();
+        
         match tier {
             ExecutionTier::Interpreter => {
                 self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);
                 self.interpret(cpu, memory, rip)
             }
             ExecutionTier::S1 => {
+                // Check if already compiled at S1 or higher (from NReady! or previous compilation)
+                if current_tier >= ExecutionTier::S1 {
+                    // Already have S1+, execute native code
+                    if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                        self.stats.s1_execs.fetch_add(1, Ordering::Relaxed);
+                        return self.execute_native(cpu, memory, code_ptr);
+                    }
+                    // Native code missing (shouldn't happen) - fall through to recompile
+                    log::warn!("[JIT] BlockMeta tier={:?} but no native code for {:#x}", current_tier, rip);
+                }
+                
                 // Submit async S1 compilation request (non-blocking)
                 self.submit_async_s1(memory, rip, invocations);
                 
@@ -980,8 +1004,18 @@ impl JitEngine {
                 self.interpret(cpu, memory, rip)
             }
             ExecutionTier::S2 => {
-                // If we have S1, use it. Otherwise submit S1 first.
-                if block.get_tier() == ExecutionTier::S1 {
+                // Already at S2 tier - just execute native
+                if current_tier == ExecutionTier::S2 {
+                    if let Some(code_ptr) = self.code_cache.lookup(rip) {
+                        self.stats.s2_execs.fetch_add(1, Ordering::Relaxed);
+                        return self.execute_native(cpu, memory, code_ptr);
+                    }
+                    // Native code missing (shouldn't happen) - fall through to recompile
+                    log::warn!("[JIT] BlockMeta tier=S2 but no native code for {:#x}", rip);
+                }
+                
+                // If we have S1, use it and submit S2 promotion
+                if current_tier == ExecutionTier::S1 {
                     // Submit S2 promotion
                     self.submit_async_s2(memory, rip, invocations, block);
                     
@@ -991,6 +1025,9 @@ impl JitEngine {
                         return self.execute_native(cpu, memory, code_ptr);
                     }
                 }
+                
+                // No compiled code yet, submit S1 first (S2 will follow after S1 completes)
+                self.submit_async_s1(memory, rip, invocations);
                 
                 // Fall back to interpreter
                 self.stats.interpreter_execs.fetch_add(1, Ordering::Relaxed);

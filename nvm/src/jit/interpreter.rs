@@ -852,64 +852,135 @@ impl Interpreter {
     }
     
     fn exec_movs(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
-        let size = if instr.prefixes.op_size { 2 } else { 8 };
-        let rsi = cpu.read_gpr(6);
-        let rdi = cpu.read_gpr(7);
-        
-        let value = match size {
-            1 => memory.read_u8(rsi) as u64,
-            2 => memory.read_u16(rsi) as u64,
-            4 => memory.read_u32(rsi) as u64,
-            _ => memory.read_u64(rsi),
+        // Determine operand size based on opcode and prefix
+        // 0xA4 = MOVSB (byte)
+        // 0xA5 = MOVSW/MOVSD/MOVSQ (depends on operand-size prefix and mode)
+        let size: i64 = if (instr.opcode & 0xFF) == 0xA4 {
+            1  // MOVSB always 1 byte
+        } else {
+            // 0xA5: MOVSW (with 0x66 prefix) or MOVSD (default in 64-bit mode)
+            if instr.prefixes.op_size { 2 } else { 4 }
         };
         
-        match size {
-            1 => memory.write_u8(rdi, value as u8),
-            2 => memory.write_u16(rdi, value as u16),
-            4 => memory.write_u32(rdi, value as u32),
-            _ => memory.write_u64(rdi, value),
+        let delta = if cpu.get_df() { -size } else { size };
+        
+        // Handle REP prefix
+        let count = if instr.prefixes.rep {
+            cpu.read_gpr(1) as usize  // RCX
+        } else {
+            1
+        };
+        
+        let mut rsi = cpu.read_gpr(6);
+        let mut rdi = cpu.read_gpr(7);
+        
+        for _ in 0..count {
+            let value = match size {
+                1 => memory.read_u8(rsi) as u64,
+                2 => memory.read_u16(rsi) as u64,
+                4 => memory.read_u32(rsi) as u64,
+                _ => memory.read_u64(rsi),
+            };
+            
+            match size {
+                1 => memory.write_u8(rdi, value as u8),
+                2 => memory.write_u16(rdi, value as u16),
+                4 => memory.write_u32(rdi, value as u32),
+                _ => memory.write_u64(rdi, value),
+            }
+            
+            rsi = (rsi as i64 + delta) as u64;
+            rdi = (rdi as i64 + delta) as u64;
         }
         
-        let delta = if cpu.get_df() { -(size as i64) } else { size as i64 };
-        cpu.write_gpr(6, (rsi as i64 + delta) as u64);
-        cpu.write_gpr(7, (rdi as i64 + delta) as u64);
+        cpu.write_gpr(6, rsi);
+        cpu.write_gpr(7, rdi);
+        if instr.prefixes.rep {
+            cpu.write_gpr(1, 0);  // RCX = 0 after REP
+        }
         
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
     fn exec_stos(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
-        let size = if instr.prefixes.op_size { 2 } else { 8 };
-        let rdi = cpu.read_gpr(7);
+        // Determine operand size based on opcode and prefix
+        // 0xAA = STOSB (byte)
+        // 0xAB = STOSW/STOSD/STOSQ (depends on operand-size prefix and mode)
+        let size: i64 = if (instr.opcode & 0xFF) == 0xAA {
+            1  // STOSB always 1 byte
+        } else {
+            // 0xAB: STOSW (with 0x66 prefix) or STOSD (default in 64-bit mode)
+            if instr.prefixes.op_size { 2 } else { 4 }
+        };
+        
+        let delta = if cpu.get_df() { -size } else { size };
+        
+        // Handle REP prefix
+        let count = if instr.prefixes.rep {
+            cpu.read_gpr(1) as usize  // RCX
+        } else {
+            1
+        };
+        
+        let mut rdi = cpu.read_gpr(7);
         let rax = cpu.read_gpr(0);
         
-        match size {
-            1 => memory.write_u8(rdi, rax as u8),
-            2 => memory.write_u16(rdi, rax as u16),
-            4 => memory.write_u32(rdi, rax as u32),
-            _ => memory.write_u64(rdi, rax),
+        for _ in 0..count {
+            match size {
+                1 => memory.write_u8(rdi, rax as u8),
+                2 => memory.write_u16(rdi, rax as u16),
+                4 => memory.write_u32(rdi, rax as u32),
+                _ => memory.write_u64(rdi, rax),
+            }
+            rdi = (rdi as i64 + delta) as u64;
         }
         
-        let delta = if cpu.get_df() { -(size as i64) } else { size as i64 };
-        cpu.write_gpr(7, (rdi as i64 + delta) as u64);
+        cpu.write_gpr(7, rdi);
+        if instr.prefixes.rep {
+            cpu.write_gpr(1, 0);  // RCX = 0 after REP
+        }
         
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }
     
     fn exec_lods(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
-        let size = if instr.prefixes.op_size { 2 } else { 8 };
-        let rsi = cpu.read_gpr(6);
-        
-        let value = match size {
-            1 => memory.read_u8(rsi) as u64,
-            2 => memory.read_u16(rsi) as u64,
-            4 => memory.read_u32(rsi) as u64,
-            _ => memory.read_u64(rsi),
+        // Determine operand size based on opcode and prefix
+        // 0xAC = LODSB (byte)
+        // 0xAD = LODSW/LODSD/LODSQ (depends on operand-size prefix and mode)
+        let size: i64 = if (instr.opcode & 0xFF) == 0xAC {
+            1  // LODSB always 1 byte
+        } else {
+            // 0xAD: LODSW (with 0x66 prefix) or LODSD (default in 64-bit mode)
+            if instr.prefixes.op_size { 2 } else { 4 }
         };
         
-        cpu.write_gpr(0, value);
+        let delta = if cpu.get_df() { -size } else { size };
         
-        let delta = if cpu.get_df() { -(size as i64) } else { size as i64 };
-        cpu.write_gpr(6, (rsi as i64 + delta) as u64);
+        // Handle REP prefix (rarely used with LODS, but should work)
+        let count = if instr.prefixes.rep {
+            cpu.read_gpr(1) as usize  // RCX
+        } else {
+            1
+        };
+        
+        let mut rsi = cpu.read_gpr(6);
+        let mut value = 0u64;
+        
+        for _ in 0..count {
+            value = match size {
+                1 => memory.read_u8(rsi) as u64,
+                2 => memory.read_u16(rsi) as u64,
+                4 => memory.read_u32(rsi) as u64,
+                _ => memory.read_u64(rsi),
+            };
+            rsi = (rsi as i64 + delta) as u64;
+        }
+        
+        cpu.write_gpr(0, value);
+        cpu.write_gpr(6, rsi);
+        if instr.prefixes.rep {
+            cpu.write_gpr(1, 0);  // RCX = 0 after REP
+        }
         
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))
     }

@@ -60,7 +60,7 @@ use super::compiler_s1::S1Compiler;
 use super::compiler_s2::S2Compiler;
 use super::codegen::CodeGen;
 use super::profile::ProfileDb;
-use super::{JitError, JitResult};
+use super::{JitError, JitResult, BlockMeta, ExecutionTier};
 
 // ============================================================================
 // Configuration
@@ -319,7 +319,7 @@ pub trait CompileCallback: Send + Sync {
     fn on_compile_complete(&self, result: CompileResult);
 }
 
-/// Default callback that installs to CodeCache
+/// Default callback that installs to CodeCache (for testing/simple use cases)
 pub struct CodeCacheInstaller {
     cache: Arc<CodeCache>,
 }
@@ -352,6 +352,69 @@ impl CompileCallback for CodeCacheInstaller {
                 if let Err(e) = self.cache.insert(block) {
                     log::warn!("[AsyncJIT] Failed to install compiled block {:#x}: {:?}", result.rip, e);
                 } else {
+                    log::debug!("[AsyncJIT] Installed {:?} block {:#x} ({} bytes)", 
+                        result.tier, result.rip, native_code.len());
+                }
+            }
+        }
+    }
+}
+
+/// Enhanced callback that installs to CodeCache AND updates BlockMeta tier
+/// This is the production callback that ensures proper tier synchronization.
+pub struct JitCompileCallback {
+    cache: Arc<CodeCache>,
+    blocks: Arc<RwLock<HashMap<u64, Arc<BlockMeta>>>>,
+}
+
+impl JitCompileCallback {
+    pub fn new(
+        cache: Arc<CodeCache>,
+        blocks: Arc<RwLock<HashMap<u64, Arc<BlockMeta>>>>,
+    ) -> Self {
+        Self { cache, blocks }
+    }
+    
+    /// Convert CompileTier to ExecutionTier
+    fn compile_tier_to_execution_tier(tier: CompileTier) -> ExecutionTier {
+        match tier {
+            CompileTier::Interpreter => ExecutionTier::Interpreter,
+            CompileTier::S1 => ExecutionTier::S1,
+            CompileTier::S2 => ExecutionTier::S2,
+        }
+    }
+}
+
+impl CompileCallback for JitCompileCallback {
+    fn on_compile_complete(&self, result: CompileResult) {
+        if let Some(native_code) = result.native_code {
+            // Allocate executable memory and install
+            if let Some(code_ptr) = self.cache.allocate_code(&native_code) {
+                let block = CompiledBlock {
+                    guest_rip: result.rip,
+                    guest_size: 0, // Will be updated
+                    host_code: code_ptr,
+                    host_size: native_code.len() as u32,
+                    tier: result.tier,
+                    exec_count: AtomicU64::new(0),
+                    last_access: AtomicU64::new(0),
+                    guest_instrs: result.guest_instrs,
+                    guest_checksum: 0,
+                    depends_on: Vec::new(),
+                    invalidated: false,
+                };
+                
+                if let Err(e) = self.cache.insert(block) {
+                    log::warn!("[AsyncJIT] Failed to install compiled block {:#x}: {:?}", result.rip, e);
+                } else {
+                    // CRITICAL: Update BlockMeta tier to prevent duplicate submissions
+                    let exec_tier = Self::compile_tier_to_execution_tier(result.tier);
+                    if let Ok(blocks) = self.blocks.read() {
+                        if let Some(block_meta) = blocks.get(&result.rip) {
+                            block_meta.set_tier(exec_tier);
+                        }
+                    }
+                    
                     log::debug!("[AsyncJIT] Installed {:?} block {:#x} ({} bytes)", 
                         result.tier, result.rip, native_code.len());
                 }
@@ -504,8 +567,8 @@ pub struct AsyncJitRuntime {
     queue: Arc<Mutex<BinaryHeap<CompileRequest>>>,
     /// Condition variable for worker wakeup
     queue_cv: Arc<Condvar>,
-    /// In-flight requests (for deduplication): rip -> request_id
-    in_flight: Arc<RwLock<HashMap<u64, u64>>>,
+    /// In-flight requests (for deduplication): rip -> (request_id, target_tier)
+    in_flight: Arc<RwLock<HashMap<u64, (u64, CompileTier)>>>,
     /// Worker threads
     workers: Vec<JoinHandle<()>>,
     /// Shutdown flag
@@ -514,6 +577,8 @@ pub struct AsyncJitRuntime {
     callback: Arc<dyn CompileCallback>,
     /// Compiler context (shared between workers)
     compiler: Arc<CompilerContext>,
+    /// Code cache reference (for tier checking)
+    code_cache: Option<Arc<CodeCache>>,
     /// Statistics
     pub stats: Arc<AsyncCompileStats>,
     /// Worker count
@@ -542,9 +607,15 @@ impl AsyncJitRuntime {
             shutdown: Arc::new(AtomicBool::new(false)),
             callback,
             compiler,
+            code_cache: None,
             stats: Arc::new(AsyncCompileStats::default()),
             worker_count: count,
         }
+    }
+    
+    /// Set code cache reference for tier-aware deduplication
+    pub fn set_code_cache(&mut self, cache: Arc<CodeCache>) {
+        self.code_cache = Some(cache);
     }
     
     /// Start the runtime (spawns worker threads)
@@ -573,12 +644,28 @@ impl AsyncJitRuntime {
     
     /// Submit a compilation request (non-blocking)
     pub fn submit(&self, request: CompileRequest) -> bool {
-        // Check for duplicate
+        let target_tier = request.target_tier;
+        
+        // Check if CodeCache already has this tier (prevents recompilation spam)
+        if let Some(ref cache) = self.code_cache {
+            if let Some(block_info) = cache.get_block(request.rip) {
+                if block_info.tier >= target_tier {
+                    log::trace!("[AsyncJIT] Already compiled {:#x} at {:?} (requested {:?})",
+                        request.rip, block_info.tier, target_tier);
+                    return false;
+                }
+            }
+        }
+        
+        // Check for duplicate in-flight request at same or higher tier
         {
             let in_flight = self.in_flight.read().unwrap();
-            if in_flight.contains_key(&request.rip) {
-                log::trace!("[AsyncJIT] Deduplicated request for {:#x}", request.rip);
-                return false;
+            if let Some(&(_, existing_tier)) = in_flight.get(&request.rip) {
+                if existing_tier >= target_tier {
+                    log::trace!("[AsyncJIT] Deduplicated request for {:#x} (in-flight at {:?})",
+                        request.rip, existing_tier);
+                    return false;
+                }
             }
         }
         
@@ -589,10 +676,10 @@ impl AsyncJitRuntime {
             return false;
         }
         
-        // Mark as in-flight
+        // Mark as in-flight with target tier
         {
             let mut in_flight = self.in_flight.write().unwrap();
-            in_flight.insert(request.rip, request.request_id);
+            in_flight.insert(request.rip, (request.request_id, target_tier));
         }
         
         self.stats.record_submit();
@@ -703,7 +790,7 @@ fn worker_loop(
     worker_id: usize,
     queue: Arc<Mutex<BinaryHeap<CompileRequest>>>,
     queue_cv: Arc<Condvar>,
-    in_flight: Arc<RwLock<HashMap<u64, u64>>>,
+    in_flight: Arc<RwLock<HashMap<u64, (u64, CompileTier)>>>,
     shutdown: Arc<AtomicBool>,
     callback: Arc<dyn CompileCallback>,
     compiler: Arc<CompilerContext>,
@@ -730,15 +817,15 @@ fn worker_loop(
         
         let Some(request) = request else { continue };
         
-        // Check if cancelled
+        // Check if cancelled or superseded by higher-tier request
         {
             let in_flight_guard = in_flight.read().unwrap();
             match in_flight_guard.get(&request.rip) {
-                Some(&id) if id == request.request_id => {
-                    // Still valid
+                Some(&(id, _tier)) if id == request.request_id => {
+                    // Still valid - this is our request
                 }
                 _ => {
-                    // Cancelled or superseded
+                    // Cancelled or superseded by another request
                     stats.record_drop();
                     continue;
                 }

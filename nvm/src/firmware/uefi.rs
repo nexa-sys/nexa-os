@@ -1329,6 +1329,15 @@ impl Firmware for UefiFirmware {
             0x00, 0x7C, 0x00, 0x00,       // 0x7C00
             0x00, 0x00, 0x00, 0x00,
             
+            // Clear VGA screen first (80*25 = 2000 words at 0xB8000)
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x00, 0x80, 0x0B, 0x00,       // 0xB8000
+            0x00, 0x00, 0x00, 0x00,
+            0x66, 0xB8, 0x20, 0x1F,       // MOV AX, 0x1F20 (space + white on blue)
+            0xB9, 0xD0, 0x07, 0x00, 0x00, // MOV ECX, 2000 (80*25)
+            0xFC,                         // CLD (clear direction flag)
+            0xF3, 0x66, 0xAB,             // REP STOSW (fill with AX)
+            
             // Display "UEFI" on screen (VGA text at 0xB8000)
             0x48, 0xBF,                   // MOV RDI, imm64
             0x00, 0x80, 0x0B, 0x00,       // 0xB8000
