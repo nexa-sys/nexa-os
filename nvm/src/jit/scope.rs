@@ -274,13 +274,13 @@ impl CompilationScope {
 /// Cross-block dependency graph for optimization
 pub struct DependencyGraph {
     /// Nodes indexed by instruction position
-    nodes: Vec<DependencyNode>,
+    pub(crate) nodes: Vec<DependencyNode>,
     /// Total instruction count
-    instr_count: usize,
+    pub(crate) instr_count: usize,
     /// Critical path length
-    critical_path_length: u32,
+    pub(crate) critical_path_length: u32,
     /// Available ILP (instructions schedulable in parallel)
-    available_ilp: f32,
+    pub(crate) available_ilp: f32,
 }
 
 impl DependencyGraph {
@@ -572,6 +572,16 @@ impl DependencyGraph {
     /// Get critical path length in cycles
     pub fn critical_length(&self) -> u32 {
         self.critical_path_length
+    }
+    
+    /// Get node reference
+    pub fn nodes(&self) -> &[DependencyNode] {
+        &self.nodes
+    }
+    
+    /// Get instruction count
+    pub fn instr_count(&self) -> usize {
+        self.instr_count
     }
     
     /// Get reorderable instruction pairs (no true dependency)
@@ -1099,8 +1109,13 @@ impl ScopeBuilder {
 // Helper Functions
 // ============================================================================
 
-/// Get VRegs read by an operation
+/// Get VRegs read by an operation (internal)
 fn get_read_vregs(op: &IrOp) -> Vec<VReg> {
+    get_read_vregs_from_op(op)
+}
+
+/// Get VRegs read by an operation (public for scheduler)
+pub fn get_read_vregs_from_op(op: &IrOp) -> Vec<VReg> {
     match op {
         IrOp::Add(a, b) | IrOp::Sub(a, b) | IrOp::Mul(a, b) | IrOp::IMul(a, b) |
         IrOp::Div(a, b) | IrOp::IDiv(a, b) | IrOp::And(a, b) | IrOp::Or(a, b) |

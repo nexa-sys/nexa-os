@@ -180,6 +180,14 @@ pub struct OptStats {
     pub memory_reorders: u32,
     /// Cross-block optimizations
     pub cross_block_opts: u32,
+    /// Scheduler statistics
+    pub scheduler_stats: Option<super::scheduler::ScheduleStats>,
+    /// Instructions reordered by scheduler
+    pub instrs_reordered: u32,
+    /// Critical path length (cycles)
+    pub critical_path_length: u32,
+    /// Achieved ILP (instruction level parallelism)
+    pub achieved_ilp: f32,
 }
 
 /// S2 optimizing compiler
@@ -1299,20 +1307,71 @@ impl S2Compiler {
     }
     
     fn schedule_instructions(&self, ir: &mut IrBlock) {
-        // S2 uses advanced scheduling with:
+        self.schedule_instructions_with_stats(ir, &mut None);
+    }
+    
+    /// Schedule instructions using the new enterprise scheduler
+    /// Returns detailed statistics about the scheduling process
+    fn schedule_instructions_with_stats(
+        &self, 
+        ir: &mut IrBlock,
+        stats: &mut Option<&mut OptStats>,
+    ) {
+        use super::scheduler::{InstructionScheduler, SchedulerConfig, SchedulingAlgorithm};
+        use super::scope::DependencyGraph;
+        
+        // S2 uses the new enterprise scheduler with:
         // - Full dependency analysis (RAW, WAR, WAW, memory, control)
         // - Accurate latency model based on Intel/AMD microarchitectures
         // - Critical path scheduling for maximum ILP
         // - Register pressure tracking to minimize spills
         // - Software pipelining for loops
-        // - Trace scheduling across basic blocks
+        // - Speculative memory reordering with profile guidance
         
+        // Configure scheduler based on S2Config
+        let scheduler_config = SchedulerConfig {
+            max_window_size: if self.config.scope_aware_opt { 4096 } else { 256 },
+            speculative_memory: self.config.branch_speculation,
+            speculation_threshold: self.config.speculation_threshold,
+            critical_path_priority: true,
+            resource_model: true,
+            algorithm: SchedulingAlgorithm::CriticalPath,
+            ..SchedulerConfig::default()
+        };
+        
+        let scheduler = InstructionScheduler::with_config(scheduler_config);
+        
+        // Build dependency graph for the entire IR
+        let dep_graph = DependencyGraph::build(ir);
+        
+        // Get scope level for scheduling decisions
+        let scope_level = if let Some(ref stats) = stats {
+            stats.scope_level
+        } else {
+            super::scope::ScopeLevel::Block
+        };
+        
+        // Create dummy profile for scheduling (would use real profile in production)
+        let profile = ProfileDb::new(1024);
+        
+        // Run scheduler
+        let result = scheduler.schedule_scope(ir, scope_level, &profile);
+        
+        // Update statistics
+        if let Some(ref mut opt_stats) = stats {
+            opt_stats.scheduler_stats = Some(result.stats.clone());
+            opt_stats.instrs_reordered = result.stats.reordered;
+            opt_stats.critical_path_length = result.stats.critical_path_length;
+            opt_stats.achieved_ilp = result.stats.achieved_ilp;
+        }
+        
+        // For backward compatibility, also run per-block scheduling for small blocks
         for bb in &mut ir.blocks {
             if bb.instrs.len() < 3 {
                 continue;
             }
             
-            // Build full scheduling context
+            // Build full scheduling context (legacy path)
             let sched_ctx = S2ScheduleContext::build(&bb.instrs);
             
             // Run advanced list scheduling with register pressure awareness

@@ -73,6 +73,8 @@ pub mod loop_opt;
 pub mod block_manager;
 pub mod isa_opt;
 pub mod scope;
+pub mod scheduler;
+pub mod scope_optimizer;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
@@ -101,7 +103,13 @@ pub use deopt::{DeoptManager, DeoptGuard, DeoptReason, DeoptState, DeoptStatsSna
 pub use speculation::{SpeculationManager, SpecConfig, SpecStatsSnapshot, BlockSpeculations, TypeSpeculation, ValueSpeculation, BranchSpeculation, CallSpeculation, PathSpeculation, TypeTag, CallSpecKind, PathCondition};
 
 // Scope and dependency graph exports (for advanced optimization)
-pub use scope::{ScopeLevel, ScopeConfig, ScopeBuilder, CompilationScope, DependencyGraph, DependencyKind, DependencyEdge, ScopeProfile, ScopeProfileDb, DependencyStats};
+pub use scope::{ScopeLevel, ScopeConfig, ScopeBuilder, CompilationScope, DependencyGraph, DependencyKind, DependencyEdge, ScopeProfile, ScopeProfileDb, DependencyStats, get_read_vregs_from_op};
+
+// Instruction scheduler exports
+pub use scheduler::{InstructionScheduler, SchedulerConfig, SchedulingAlgorithm, ExecutionUnits, ScheduleResult, ScheduleStats, SpeculativeMove, SpeculativeMoveKind};
+
+// Scope-aware optimizer exports
+pub use scope_optimizer::{ScopeOptimizer, ScopeOptimizerConfig, ScopeThresholds, ScopeOptResult, OptimizationStats, GuardInfo};
 
 // ============================================================================
 // JIT CPU State - Direct access structure for native code
