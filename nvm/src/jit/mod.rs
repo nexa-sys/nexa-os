@@ -70,6 +70,7 @@ pub mod deopt;
 pub mod speculation;
 pub mod escape;
 pub mod loop_opt;
+pub mod block_manager;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
@@ -78,7 +79,7 @@ use crate::cpu::VirtualCpu;
 use crate::memory::{PhysicalMemory, AddressSpace};
 
 pub use decoder::{X86Decoder, DecodedInstr};
-pub use ir::{IrBuilder, IrBlock, IrInstr, IrOp};
+pub use ir::{IrBuilder, IrBlock, IrInstr, IrOp, VectorOpKind};
 pub use interpreter::Interpreter;
 pub use compiler_s1::S1Compiler;
 pub use compiler_s2::{S2Compiler, S2Config, OptStats};
@@ -90,6 +91,7 @@ pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandi
 pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller, JitCompileCallback};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
 pub use async_restore::{AsyncRestoreManager, RestoreRequest, RestoreResult, RestorePriority, RestoreCallback, RestoreStatsSnapshot, PrefetchAnalyzer};
+pub use block_manager::{BlockManager, UnifiedBlock, IsaCodegenConfig};
 
 // Deoptimization and speculation exports
 pub use deopt::{DeoptManager, DeoptGuard, DeoptReason, DeoptState, DeoptStatsSnapshot, GuardKind, RegMapping, DeoptMetadata};

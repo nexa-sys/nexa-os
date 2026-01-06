@@ -598,8 +598,15 @@ impl NReadyCache {
     // Directory Path Helpers (v2 Structure)
     // ========================================================================
     
-    /// Get VM-specific cache directory
+    /// Get VM-specific cache directory (internal)
     fn vm_dir(&self) -> String {
+        format!("{}/{}", self.base_dir, self.vm_name)
+    }
+    
+    /// Get VM-specific cache directory path (public API)
+    /// 
+    /// Used by BlockManager to read stale native block headers.
+    pub fn vm_dir_path(&self) -> String {
         format!("{}/{}", self.base_dir, self.vm_name)
     }
     
@@ -1414,6 +1421,78 @@ impl NReadyCache {
                     data.extend_from_slice(&vreg.0.to_le_bytes());
                 }
             }
+            
+            // ================================================================
+            // ISA-specific operations (opcodes 140-169)
+            // ================================================================
+            IrOp::Popcnt(src) => {
+                data.push(140);
+                data.extend_from_slice(&src.0.to_le_bytes());
+            }
+            IrOp::Lzcnt(src) => {
+                data.push(141);
+                data.extend_from_slice(&src.0.to_le_bytes());
+            }
+            IrOp::Tzcnt(src) => {
+                data.push(142);
+                data.extend_from_slice(&src.0.to_le_bytes());
+            }
+            IrOp::Bsf(src) => {
+                data.push(143);
+                data.extend_from_slice(&src.0.to_le_bytes());
+            }
+            IrOp::Bsr(src) => {
+                data.push(144);
+                data.extend_from_slice(&src.0.to_le_bytes());
+            }
+            IrOp::Bextr(src, start, len) => {
+                data.push(145);
+                data.extend_from_slice(&src.0.to_le_bytes());
+                data.extend_from_slice(&start.0.to_le_bytes());
+                data.extend_from_slice(&len.0.to_le_bytes());
+            }
+            IrOp::Pdep(src, mask) => {
+                data.push(146);
+                data.extend_from_slice(&src.0.to_le_bytes());
+                data.extend_from_slice(&mask.0.to_le_bytes());
+            }
+            IrOp::Pext(src, mask) => {
+                data.push(147);
+                data.extend_from_slice(&src.0.to_le_bytes());
+                data.extend_from_slice(&mask.0.to_le_bytes());
+            }
+            // FMA/AES/PCLMUL (opcodes 150-159)
+            IrOp::Fma(a, b, c) => {
+                data.push(150);
+                data.extend_from_slice(&a.0.to_le_bytes());
+                data.extend_from_slice(&b.0.to_le_bytes());
+                data.extend_from_slice(&c.0.to_le_bytes());
+            }
+            IrOp::Aesenc(state, key) => {
+                data.push(151);
+                data.extend_from_slice(&state.0.to_le_bytes());
+                data.extend_from_slice(&key.0.to_le_bytes());
+            }
+            IrOp::Aesdec(state, key) => {
+                data.push(152);
+                data.extend_from_slice(&state.0.to_le_bytes());
+                data.extend_from_slice(&key.0.to_le_bytes());
+            }
+            IrOp::Pclmul(a, b, imm) => {
+                data.push(153);
+                data.extend_from_slice(&a.0.to_le_bytes());
+                data.extend_from_slice(&b.0.to_le_bytes());
+                data.push(*imm);
+            }
+            // Vector operations (opcodes 160-169)
+            IrOp::VectorOp { kind, width, src1, src2 } => {
+                data.push(160);
+                data.push(*kind as u8);
+                data.extend_from_slice(&(*width as u16).to_le_bytes());
+                data.extend_from_slice(&src1.0.to_le_bytes());
+                data.extend_from_slice(&src2.0.to_le_bytes());
+            }
+            
             // Exit
             IrOp::Exit(reason) => {
                 data.push(200);
@@ -1823,6 +1902,107 @@ impl NReadyCache {
                 }
                 IrOp::Phi(entries)
             }
+            
+            // ================================================================
+            // ISA-specific operations (opcodes 140-169)
+            // ================================================================
+            140 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                offset += 4;
+                IrOp::Popcnt(src)
+            }
+            141 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                offset += 4;
+                IrOp::Lzcnt(src)
+            }
+            142 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                offset += 4;
+                IrOp::Tzcnt(src)
+            }
+            143 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                offset += 4;
+                IrOp::Bsf(src)
+            }
+            144 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                offset += 4;
+                IrOp::Bsr(src)
+            }
+            145 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let start = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                let len = VReg(u32::from_le_bytes(data[offset+8..offset+12].try_into().ok()?));
+                offset += 12;
+                IrOp::Bextr(src, start, len)
+            }
+            146 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let mask = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                offset += 8;
+                IrOp::Pdep(src, mask)
+            }
+            147 => {
+                let src = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let mask = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                offset += 8;
+                IrOp::Pext(src, mask)
+            }
+            // FMA/AES/PCLMUL (opcodes 150-159)
+            150 => {
+                let a = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let b = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                let c = VReg(u32::from_le_bytes(data[offset+8..offset+12].try_into().ok()?));
+                offset += 12;
+                IrOp::Fma(a, b, c)
+            }
+            151 => {
+                let state = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let key = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                offset += 8;
+                IrOp::Aesenc(state, key)
+            }
+            152 => {
+                let state = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let key = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                offset += 8;
+                IrOp::Aesdec(state, key)
+            }
+            153 => {
+                let a = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let b = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                offset += 8;
+                let imm = data[offset];
+                offset += 1;
+                IrOp::Pclmul(a, b, imm)
+            }
+            // Vector operations (opcodes 160-169)
+            160 => {
+                use super::ir::VectorOpKind;
+                let kind_byte = data[offset];
+                offset += 1;
+                let kind = match kind_byte {
+                    0 => VectorOpKind::Add,
+                    1 => VectorOpKind::Sub,
+                    2 => VectorOpKind::Mul,
+                    3 => VectorOpKind::Div,
+                    4 => VectorOpKind::And,
+                    5 => VectorOpKind::Or,
+                    6 => VectorOpKind::Xor,
+                    7 => VectorOpKind::Min,
+                    8 => VectorOpKind::Max,
+                    _ => VectorOpKind::Shuffle,
+                };
+                let width = u16::from_le_bytes(data[offset..offset+2].try_into().ok()?);
+                offset += 2;
+                let src1 = VReg(u32::from_le_bytes(data[offset..offset+4].try_into().ok()?));
+                let src2 = VReg(u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?));
+                offset += 8;
+                IrOp::VectorOp { kind, width, src1, src2 }
+            }
+            
             200 => {
                 let (reason, new_offset) = self.deserialize_exit_reason(data, offset)?;
                 offset = new_offset;

@@ -117,8 +117,51 @@ pub enum IrOp {
     // Phi node (SSA)
     Phi(Vec<(BlockId, VReg)>),
     
+    // Bit manipulation (ISA-dependent)
+    Popcnt(VReg),              // Population count
+    Lzcnt(VReg),               // Leading zero count
+    Tzcnt(VReg),               // Trailing zero count
+    Bsf(VReg),                 // Bit scan forward
+    Bsr(VReg),                 // Bit scan reverse
+    Bextr(VReg, VReg, VReg),   // Bit field extract (BMI1)
+    Pdep(VReg, VReg),          // Parallel bits deposit (BMI2)
+    Pext(VReg, VReg),          // Parallel bits extract (BMI2)
+    
+    // FMA operations (requires FMA ISA)
+    Fma(VReg, VReg, VReg),     // a * b + c
+    
+    // AES operations (requires AES-NI)
+    Aesenc(VReg, VReg),        // AES encrypt round
+    Aesdec(VReg, VReg),        // AES decrypt round
+    
+    // PCLMUL (requires PCLMULQDQ)
+    Pclmul(VReg, VReg, u8),    // Carryless multiply
+    
+    // Vector operations (width determines ISA requirement)
+    VectorOp {
+        kind: VectorOpKind,
+        width: u16,            // 128=SSE, 256=AVX, 512=AVX-512
+        src1: VReg,
+        src2: VReg,
+    },
+    
     // Exit VM (for interpreter/deopt)
     Exit(ExitReason),
+}
+
+/// Vector operation kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorOpKind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    And,
+    Or,
+    Xor,
+    Min,
+    Max,
+    Shuffle,
 }
 
 /// Exit reason for VM
