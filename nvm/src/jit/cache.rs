@@ -551,6 +551,8 @@ impl CodeCache {
                         std::slice::from_raw_parts(block.host_code, block.host_size as usize).to_vec()
                     };
                     
+                    // Note: ir_data and opt_meta are populated by JitEngine
+                    // from BlockMeta, since CodeCache doesn't store IR/opt data
                     to_persist.push(BlockPersistInfo {
                         guest_rip: block.guest_rip,
                         guest_size: block.guest_size,
@@ -560,6 +562,8 @@ impl CodeCache {
                         guest_instrs: block.guest_instrs,
                         guest_checksum: block.guest_checksum,
                         native_code,
+                        ir_data: None,   // Filled by JitEngine from BlockMeta.ir
+                        opt_meta: None,  // Filled by JitEngine from BlockMeta.opt_meta
                     });
                 } else {
                     to_discard.push(candidate.rip);
@@ -745,6 +749,8 @@ impl CodeCache {
                     guest_instrs: b.guest_instrs,
                     guest_checksum: b.guest_checksum,
                     native_code,
+                    ir_data: None,   // IR is stored in JitEngine's BlockMeta
+                    opt_meta: None,  // Opt metadata is stored in JitEngine's BlockMeta
                 })
             })
             .collect()
@@ -767,6 +773,10 @@ pub struct BlockPersistInfo {
     pub guest_instrs: u32,
     pub guest_checksum: u64,
     pub native_code: Vec<u8>,
+    /// Serialized IR data for recompilation (NVRI format)
+    pub ir_data: Option<Vec<u8>>,
+    /// Serialized optimization metadata (escape + loop results)
+    pub opt_meta: Option<Vec<u8>>,
 }
 
 /// Block info (without raw pointer)

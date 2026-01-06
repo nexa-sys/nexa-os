@@ -85,7 +85,7 @@ pub use compiler_s2::{S2Compiler, S2Config, OptStats};
 pub use codegen::CodeGen;
 pub use profile::{ProfileDb, BranchProfile, CallProfile, BlockProfile, BranchBias, ValueTypeTag, RegisterTypeProfile, RegisterValueProfile, PathProfile, ProfileStats};
 pub use cache::{CodeCache, CacheStats, CompiledBlock, CompileTier, CacheError, BlockPersistInfo, SmartEvictResult, EvictionCandidateInfo};
-pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock};
+pub use nready::{NReadyCache, NativeBlockInfo, EvictableBlock, RestoredBlock, BlockOptMeta};
 pub use eviction::{HotnessTracker, HotnessEntry, EvictedBlockInfo, EvictionCandidate, HotnessSnapshot};
 pub use async_runtime::{AsyncJitRuntime, CompileRequest, CompileResult, CompilePriority, CompileCallback, AsyncStatsSnapshot, CompilerContext, CodeCacheInstaller, JitCompileCallback};
 pub use async_eviction::{AsyncEvictionManager, EvictionState, EvictionStats, EvictionStatsSnapshot};
@@ -563,6 +563,9 @@ pub struct BlockMeta {
     pub valid: AtomicBool,
     /// Timestamp of last execution
     pub last_exec: AtomicU64,
+    /// Serialized optimization metadata (escape analysis + loop optimization results)
+    /// Stored as serialized bytes for efficient persistence during eviction
+    pub opt_meta: Option<Vec<u8>>,
 }
 
 impl Clone for BlockMeta {
@@ -578,6 +581,7 @@ impl Clone for BlockMeta {
             ir: self.ir.clone(),
             valid: AtomicBool::new(self.valid.load(Ordering::Relaxed)),
             last_exec: AtomicU64::new(self.last_exec.load(Ordering::Relaxed)),
+            opt_meta: self.opt_meta.clone(),
         }
     }
 }
@@ -600,6 +604,7 @@ impl BlockMeta {
             ir: None,
             valid: AtomicBool::new(true),
             last_exec: AtomicU64::new(0),
+            opt_meta: None,
         }
     }
     
@@ -1268,7 +1273,7 @@ impl JitEngine {
         
         // S2 requires an existing S1 block to optimize
         // First ensure we have S1 compiled
-        let native_len = if block.ir.is_none() {
+        let (native_len, opt_meta) = if block.ir.is_none() {
             // Need to compile with S1 first
             let mut guest_code = vec![0u8; 4096];
             for (i, byte) in guest_code.iter_mut().enumerate() {
@@ -1280,6 +1285,10 @@ impl JitEngine {
             let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
             let len = s2_block.native.len();
             
+            // Extract optimization metadata for persistence
+            let opt_meta = BlockOptMeta::from_opt_stats(rip, &s2_block.opt_stats)
+                .serialize_raw();
+            
             // Replace in code cache (with smart eviction if needed)
             if let Err(_) = self.code_cache.replace(rip, s2_block.native.clone()) {
                 self.perform_smart_eviction(len as u64)?;
@@ -1289,7 +1298,7 @@ impl JitEngine {
             // Update hotness tracker tier
             self.hotness_tracker.update_tier(rip, CompileTier::S2);
             
-            len
+            (len, opt_meta)
         } else if let Some(ref _ir) = block.ir {
             // We have existing IR, find S1 block somehow
             // For now, recompile from scratch
@@ -1300,11 +1309,28 @@ impl JitEngine {
             let s1_block = self.s1_compiler.compile(&guest_code, rip, &self.decoder, &self.profile_db)?;
             let s2_block = self.s2_compiler.compile_from_s1(&s1_block, &self.profile_db)?;
             let len = s2_block.native.len();
+            
+            // Extract optimization metadata for persistence
+            let opt_meta = BlockOptMeta::from_opt_stats(rip, &s2_block.opt_stats)
+                .serialize_raw();
+            
             self.code_cache.replace(rip, s2_block.native)?;
-            len
+            (len, opt_meta)
         } else {
-            0
+            (0, None)
         };
+        
+        // Update BlockMeta with optimization metadata (for later eviction)
+        if opt_meta.is_some() {
+            let mut blocks = self.blocks.write().unwrap();
+            if let Some(block_arc) = blocks.get_mut(&rip) {
+                // BlockMeta is inside Arc, we need to update via interior mutability
+                // Since opt_meta is not atomic, we recreate the Arc with updated BlockMeta
+                let mut new_meta = (**block_arc).clone();
+                new_meta.opt_meta = opt_meta;
+                *block_arc = Arc::new(new_meta);
+            }
+        }
         
         // Log INFO only for VM's first S2 compilation
         if !self.logged_first_s2.swap(true, Ordering::Relaxed) {
@@ -1656,7 +1682,25 @@ impl JitEngine {
         // Persist blocks to disk via NReady!
         if !evict_result.to_persist.is_empty() {
             if let Some(ref nready) = self.nready {
+                // Get IR and opt_meta from BlockMeta
+                let blocks = self.blocks.read().unwrap();
+                
                 for block_info in &evict_result.to_persist {
+                    // Extract IR and opt_meta from BlockMeta
+                    let (ir_data, opt_meta) = if let Some(block_meta) = blocks.get(&block_info.guest_rip) {
+                        // Serialize IR if available
+                        let ir_data = block_meta.ir.as_ref().and_then(|ir| {
+                            nready.serialize_single_ir(block_info.guest_rip, ir).ok()
+                        });
+                        
+                        // Clone opt_meta (already serialized in BlockMeta)
+                        let opt_meta = block_meta.opt_meta.clone();
+                        
+                        (ir_data, opt_meta)
+                    } else {
+                        (None, None)
+                    };
+                    
                     let evictable = EvictableBlock {
                         rip: block_info.guest_rip,
                         tier: block_info.tier,
@@ -1665,8 +1709,8 @@ impl JitEngine {
                         guest_instrs: block_info.guest_instrs,
                         guest_checksum: block_info.guest_checksum,
                         exec_count: block_info.exec_count,
-                        ir_data: None, // TODO: serialize IR if available
-                        opt_meta: None, // TODO: serialize optimization metadata if available
+                        ir_data,
+                        opt_meta,
                     };
                     
                     match nready.evict_block(&evictable) {
@@ -1694,6 +1738,8 @@ impl JitEngine {
                         }
                     }
                 }
+                
+                drop(blocks);
             }
         }
         

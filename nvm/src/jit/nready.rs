@@ -132,6 +132,23 @@ pub struct BlockOptMeta {
 }
 
 impl BlockOptMeta {
+    /// Create from S2 compiler OptStats
+    pub fn from_opt_stats(rip: u64, stats: &super::compiler_s2::OptStats) -> Self {
+        Self {
+            rip,
+            escape_result: stats.escape_result.clone(),
+            loop_result: stats.loop_opt_result.clone(),
+        }
+    }
+    
+    /// Serialize to bytes (without wrapper, for single-block persistence)
+    pub fn serialize_raw(&self) -> Option<Vec<u8>> {
+        if !self.has_optimizations() {
+            return None;
+        }
+        Some(self.serialize())
+    }
+    
     /// Serialize to bytes
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(128);
@@ -472,6 +489,30 @@ impl NReadyCache {
         }
         
         Ok(data)
+    }
+    
+    /// Serialize a single IR block for eviction persistence
+    /// 
+    /// Format: rip(8) + ir_data(variable)
+    /// This is a subset of the full NVRI format, without the header.
+    pub fn serialize_single_ir(&self, rip: u64, block: &IrBlock) -> JitResult<Vec<u8>> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&rip.to_le_bytes());
+        self.serialize_ir_block(&mut data, block)?;
+        Ok(data)
+    }
+    
+    /// Deserialize a single IR block from eviction data
+    pub fn deserialize_single_ir(&self, data: &[u8]) -> JitResult<Option<(u64, IrBlock)>> {
+        if data.len() < 8 {
+            return Ok(None);
+        }
+        
+        let rip = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        match self.deserialize_ir_block(&data[8..], 0) {
+            Some((block, _)) => Ok(Some((rip, block))),
+            None => Ok(None),
+        }
     }
     
     fn serialize_ir_block(&self, data: &mut Vec<u8>, block: &IrBlock) -> JitResult<()> {
