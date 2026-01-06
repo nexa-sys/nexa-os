@@ -12,6 +12,16 @@
 //! - Branch speculation for hot path optimization
 //! - Call speculation for devirtualization
 //! - Path speculation for multi-condition optimization
+//!
+//! ## Advanced Optimizations (Enterprise)
+//!
+//! - **Escape Analysis + Scalar Replacement**: Avoid heap allocations for
+//!   non-escaping objects by decomposing them into registers/stack variables
+//! - **Loop Optimizations**: 
+//!   - Loop Unrolling (profile-guided factor selection)
+//!   - Loop Invariant Code Motion (LICM)
+//!   - Induction Variable Simplification
+//!   - REP STOS/MOVS unrolling (critical for x86 string operations)
 
 use super::{JitResult, JitError};
 use super::ir::{IrBlock, IrInstr, IrOp, IrFlags, VReg, BlockId, ExitReason, IrBasicBlock};
@@ -22,6 +32,8 @@ use super::speculation::{
     SpeculationManager, BlockSpeculations, TypeSpeculation, ValueSpeculation,
     BranchSpeculation, CallSpeculation, PathSpeculation, apply_speculations,
 };
+use super::escape::{EscapeScalarPass, EscapeConfig, EscapePassResult};
+use super::loop_opt::{LoopOptPass, LoopOptConfig, LoopOptResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -62,6 +74,14 @@ pub struct S2Config {
     pub path_speculation: bool,
     /// Speculation confidence threshold (0.0 - 1.0)
     pub speculation_threshold: f64,
+    /// Enable escape analysis + scalar replacement
+    pub escape_analysis: bool,
+    /// Escape analysis configuration
+    pub escape_config: EscapeConfig,
+    /// Enable advanced loop optimizations
+    pub advanced_loop_opts: bool,
+    /// Loop optimization configuration
+    pub loop_opt_config: LoopOptConfig,
 }
 
 impl Default for S2Config {
@@ -84,6 +104,10 @@ impl Default for S2Config {
             call_speculation: true,
             path_speculation: true,
             speculation_threshold: 0.95,
+            escape_analysis: true,
+            escape_config: EscapeConfig::default(),
+            advanced_loop_opts: true,
+            loop_opt_config: LoopOptConfig::default(),
         }
     }
 }
@@ -125,6 +149,10 @@ pub struct OptStats {
     pub call_specs: u32,
     /// Path speculations applied
     pub path_specs: u32,
+    /// Escape analysis results
+    pub escape_result: Option<EscapePassResult>,
+    /// Loop optimization results
+    pub loop_opt_result: Option<LoopOptResult>,
 }
 
 /// S2 optimizing compiler
@@ -179,7 +207,19 @@ impl S2Compiler {
         // Detect loops
         let loops = self.detect_loops(&cfg, &doms);
         
-        // Apply optimizations in order
+        // ====================================================================
+        // Phase 1: Escape Analysis + Scalar Replacement (Enterprise)
+        // ====================================================================
+        // Run early to eliminate unnecessary allocations before other opts
+        if self.config.escape_analysis {
+            let escape_pass = EscapeScalarPass::with_config(self.config.escape_config.clone());
+            let escape_result = escape_pass.run(&mut ir);
+            stats.escape_result = Some(escape_result);
+        }
+        
+        // ====================================================================
+        // Phase 2: Classic Optimizations
+        // ====================================================================
         if self.config.gvn {
             self.global_value_numbering(&mut ir, &doms, &mut stats);
         }
@@ -188,12 +228,23 @@ impl S2Compiler {
             self.common_subexpr_elim(&mut ir, &mut stats);
         }
         
-        if self.config.licm {
-            self.loop_invariant_motion(&mut ir, &loops, &mut stats);
-        }
-        
-        if self.config.loop_unroll {
-            self.unroll_loops(&mut ir, &loops, profile, &mut stats);
+        // ====================================================================
+        // Phase 3: Advanced Loop Optimizations (Enterprise)
+        // ====================================================================
+        // Run comprehensive loop optimizations before basic loop opts
+        if self.config.advanced_loop_opts {
+            let mut loop_pass = LoopOptPass::with_config(self.config.loop_opt_config.clone());
+            let loop_result = loop_pass.run(&mut ir, profile);
+            stats.loop_opt_result = Some(loop_result);
+        } else {
+            // Fallback to basic loop optimizations
+            if self.config.licm {
+                self.loop_invariant_motion(&mut ir, &loops, &mut stats);
+            }
+            
+            if self.config.loop_unroll {
+                self.unroll_loops(&mut ir, &loops, profile, &mut stats);
+            }
         }
         
         if self.config.strength_reduce {
@@ -209,7 +260,7 @@ impl S2Compiler {
         }
         
         // ====================================================================
-        // Speculative Optimizations (Profile-Guided)
+        // Phase 4: Speculative Optimizations (Profile-Guided)
         // ====================================================================
         
         // Apply speculative optimizations if managers are available

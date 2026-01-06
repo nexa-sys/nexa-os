@@ -68,6 +68,8 @@ pub mod async_eviction;
 pub mod async_restore;
 pub mod deopt;
 pub mod speculation;
+pub mod escape;
+pub mod loop_opt;
 
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicU8, AtomicBool, Ordering}};
 use std::collections::{HashMap, HashSet};
