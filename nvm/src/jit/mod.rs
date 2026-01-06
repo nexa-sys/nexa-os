@@ -315,6 +315,8 @@ pub enum JitError {
     InvalidFormat,
     /// Incompatible version
     IncompatibleVersion,
+    /// Invalid compile tier for operation
+    InvalidTier,
 }
 
 impl std::fmt::Display for JitError {
@@ -341,6 +343,7 @@ impl std::fmt::Display for JitError {
             Self::IoError => write!(f, "IO error"),
             Self::InvalidFormat => write!(f, "Invalid cache format"),
             Self::IncompatibleVersion => write!(f, "Incompatible cache version"),
+            Self::InvalidTier => write!(f, "Invalid compile tier for operation"),
         }
     }
 }
@@ -1452,9 +1455,18 @@ impl JitEngine {
     /// Load NReady! cache with tiered loading strategy
     /// 
     /// Loading priority:
-    /// 1. Native code (instant, same-generation only)
-    /// 2. RI (backward compatible, needs codegen)
-    /// 3. Profile (full compat, guides future compilation)
+    /// 1. Profile (full forward/backward compat, guides compilation decisions)
+    /// 2. RI (backward compatible IR, for recompilation when native is stale)
+    /// 3. Native code (instant if version matches; recompile from IR if not)
+    /// 
+    /// Compatibility model:
+    /// - Profile: Full bidirectional compatibility (always loads)
+    /// - IR: Backward compatible (old IR works on new JIT)
+    /// - Native: Same-generation only (version + arch must match exactly)
+    /// 
+    /// When native code version doesn't match:
+    /// - If IR is available: recompile hot blocks from IR (skip decoding)
+    /// - If only profile: pre-warm invocation counters (faster promotion)
     pub fn load_nready(&self) -> JitResult<NReadyStats> {
         let nready = self.nready.as_ref()
             .ok_or_else(|| JitError::CompilationError("NReady! not enabled".to_string()))?;
@@ -1462,55 +1474,67 @@ impl JitEngine {
         let mut stats = NReadyStats::default();
         let start = std::time::Instant::now();
         
-        // 1. Try loading native code first (zero warmup if version matches)
-        match nready.load_native() {
+        // 1. Always load profile first (full compat, guides hot block detection)
+        let profile_hot_blocks: Vec<u64> = match nready.load_profile() {
+            Ok(profile) => {
+                stats.profiles_loaded = profile.block_count();
+                // Get hot block RIPs before merging
+                let hot_rips: Vec<u64> = profile.hot_block_rips(100); // threshold
+                // Merge profile data to guide hot path detection
+                self.profile_db.merge(&profile);
+                log::debug!("[NReady!] Loaded {} profile entries ({} hot blocks)", 
+                    stats.profiles_loaded, hot_rips.len());
+                hot_rips
+            }
+            Err(e) => {
+                log::debug!("[NReady!] No profile cache found: {:?}", e);
+                Vec::new()
+            }
+        };
+        
+        // 2. Load RI blocks (backward compatible IR)
+        let ir_blocks: HashMap<u64, IrBlock> = match nready.load_ri() {
+            Ok(blocks) => {
+                stats.ir_blocks_loaded = blocks.len();
+                log::debug!("[NReady!] Loaded {} IR blocks", stats.ir_blocks_loaded);
+                blocks
+            }
+            Err(e) => {
+                log::debug!("[NReady!] No RI cache found: {:?}", e);
+                HashMap::new()
+            }
+        };
+        
+        // 3. Try loading native code (zero warmup if version matches)
+        let native_valid = match nready.load_native() {
             Ok(Some(native_blocks)) => {
                 stats.native_blocks_loaded = native_blocks.len();
                 // Install native blocks directly into code cache
                 for (rip, block_info) in native_blocks {
                     if let Err(e) = self.install_native_block(rip, block_info) {
                         log::warn!("[NReady!] Failed to install native block {:#x}: {:?}", rip, e);
+                        stats.native_blocks_rejected += 1;
                     }
                 }
                 log::debug!("[NReady!] Installed {} native code blocks", stats.native_blocks_loaded);
+                true
             }
             Ok(None) => {
-                log::debug!("[NReady!] Native cache version mismatch, will recompile");
+                // Version mismatch - native code is stale
+                log::info!("[NReady!] Native cache version mismatch, recompiling from IR/profile");
+                false
             }
             Err(e) => {
                 log::debug!("[NReady!] No native cache found: {:?}", e);
+                false
             }
-        }
+        };
         
-        // 2. Load RI blocks (backward compatible)
-        match nready.load_ri() {
-            Ok(ir_blocks) => {
-                stats.ir_blocks_loaded = ir_blocks.len();
-                // Store IR blocks for on-demand compilation
-                let mut blocks = self.blocks.write().unwrap();
-                for (rip, ir) in ir_blocks {
-                    let meta = blocks.entry(rip).or_insert_with(|| Arc::new(BlockMeta::new(rip)));
-                    // Note: We can't modify Arc<BlockMeta> directly, IR caching needs redesign
-                    // For now, IR blocks will be recompiled on demand
-                }
-                log::debug!("[NReady!] Loaded {} IR blocks", stats.ir_blocks_loaded);
-            }
-            Err(e) => {
-                log::debug!("[NReady!] No RI cache found: {:?}", e);
-            }
-        }
-        
-        // 3. Always load profile (full compat, guides compilation)
-        match nready.load_profile() {
-            Ok(profile) => {
-                stats.profiles_loaded = profile.block_count();
-                // Merge profile data to guide hot path detection
-                self.profile_db.merge(&profile);
-                log::debug!("[NReady!] Loaded {} profile entries", stats.profiles_loaded);
-            }
-            Err(e) => {
-                log::debug!("[NReady!] No profile cache found: {:?}", e);
-            }
+        // 4. If native code was stale, recompile hot blocks from IR
+        if !native_valid && !ir_blocks.is_empty() {
+            let recompile_count = self.recompile_from_ir(&ir_blocks, &profile_hot_blocks);
+            log::info!("[NReady!] Recompiled {} hot blocks from IR", recompile_count);
+            stats.native_blocks_loaded = recompile_count;
         }
         
         stats.load_time_ms = start.elapsed().as_millis() as u64;
@@ -1519,6 +1543,111 @@ impl JitEngine {
         Ok(stats)
     }
     
+    /// Recompile hot blocks from cached IR
+    /// 
+    /// Returns the number of successfully recompiled blocks.
+    fn recompile_from_ir(&self, ir_blocks: &HashMap<u64, IrBlock>, hot_rips: &[u64]) -> usize {
+        let mut recompiled = 0;
+        
+        // Prioritize hot blocks (from profile), then others
+        let rips_to_compile: Vec<u64> = if hot_rips.is_empty() {
+            // No profile data - compile all available IR blocks
+            ir_blocks.keys().copied().collect()
+        } else {
+            // Compile hot blocks first (intersection of profile hot and available IR)
+            let mut rips: Vec<u64> = hot_rips.iter()
+                .filter(|rip| ir_blocks.contains_key(rip))
+                .copied()
+                .collect();
+            
+            // Then add remaining IR blocks that aren't hot
+            for rip in ir_blocks.keys() {
+                if !rips.contains(rip) {
+                    rips.push(*rip);
+                }
+            }
+            rips
+        };
+        
+        // Limit number of blocks to recompile at startup (avoid long stall)
+        const MAX_RECOMPILE_AT_STARTUP: usize = 100;
+        let compile_count = rips_to_compile.len().min(MAX_RECOMPILE_AT_STARTUP);
+        
+        for rip in rips_to_compile.into_iter().take(compile_count) {
+            if let Some(ir) = ir_blocks.get(&rip) {
+                // Use S1 compiler to generate native code from IR
+                match self.compile_from_ir(rip, ir) {
+                    Ok(_) => {
+                        recompiled += 1;
+                        log::trace!("[NReady!] Recompiled block {:#x} from IR", rip);
+                    }
+                    Err(e) => {
+                        log::warn!("[NReady!] Failed to recompile {:#x} from IR: {:?}", rip, e);
+                    }
+                }
+            }
+        }
+        
+        recompiled
+    }
+    
+    /// Compile a block directly from cached IR (skip decoding)
+    /// 
+    /// Used by NReady! cache restoration when native code is stale but IR is valid.
+    fn compile_from_ir(&self, rip: u64, ir: &IrBlock) -> JitResult<()> {
+        self.compile_from_ir_with_tier(rip, ir, CompileTier::S1)
+    }
+    
+    /// Compile a block directly from cached IR with specified tier
+    fn compile_from_ir_with_tier(&self, rip: u64, ir: &IrBlock, tier: CompileTier) -> JitResult<()> {
+        // Use appropriate compiler based on tier
+        let native = match tier {
+            CompileTier::Interpreter => {
+                return Err(JitError::InvalidTier);
+            }
+            CompileTier::S1 => {
+                let s1 = compiler_s1::S1Compiler::new();
+                s1.codegen_from_ir(ir)?
+            }
+            CompileTier::S2 => {
+                let s2 = compiler_s2::S2Compiler::new();
+                s2.codegen_from_ir(ir)?
+            }
+        };
+        
+        // Allocate executable memory
+        let host_ptr = self.code_cache.allocate_code(&native)
+            .ok_or(JitError::CodeCacheFull)?;
+        
+        // Create CompiledBlock
+        let block = CompiledBlock {
+            guest_rip: rip,
+            guest_size: ir.guest_size as u32,
+            host_code: host_ptr,
+            host_size: native.len() as u32,
+            tier,
+            exec_count: AtomicU64::new(0),
+            last_access: AtomicU64::new(0),
+            guest_instrs: ir.blocks.iter().map(|bb| bb.instrs.len()).sum::<usize>() as u32,
+            guest_checksum: 0, // Will be recalculated if needed
+            depends_on: Vec::new(),
+            invalidated: false,
+        };
+        
+        self.code_cache.insert(block).map_err(|_| JitError::CodeCacheFull)?;
+        
+        // Update block metadata tier (native code accessible via code_cache.lookup)
+        let meta = self.get_or_create_block(rip);
+        let exec_tier = match tier {
+            CompileTier::Interpreter => ExecutionTier::Interpreter,
+            CompileTier::S1 => ExecutionTier::S1,
+            CompileTier::S2 => ExecutionTier::S2,
+        };
+        meta.set_tier(exec_tier);
+        
+        Ok(())
+    }
+
     /// Install a native code block from NReady! cache into code cache
     fn install_native_block(&self, rip: u64, info: nready::NativeBlockInfo) -> JitResult<()> {
         // Allocate executable memory and copy the native code

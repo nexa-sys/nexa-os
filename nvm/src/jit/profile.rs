@@ -1385,6 +1385,22 @@ impl ProfileDb {
         self.block_counts.read().unwrap().len()
     }
     
+    /// Get RIPs of hot blocks (execution count >= threshold)
+    /// 
+    /// Returns a list of block RIPs sorted by execution count (hottest first).
+    pub fn hot_block_rips(&self, threshold: u64) -> Vec<u64> {
+        let counts = self.block_counts.read().unwrap();
+        let mut hot_blocks: Vec<(u64, u64)> = counts.iter()
+            .map(|(rip, count)| (*rip, count.load(Ordering::Relaxed)))
+            .filter(|(_, count)| *count >= threshold)
+            .collect();
+        
+        // Sort by count descending (hottest first)
+        hot_blocks.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        hot_blocks.into_iter().map(|(rip, _)| rip).collect()
+    }
+    
     // ========================================================================
     // Type Profiling (for speculation)
     // ========================================================================

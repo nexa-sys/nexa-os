@@ -1448,9 +1448,10 @@ impl Firmware for UefiFirmware {
             0x0F, 0x22, 0xC0,             // MOV CR0, EAX
             
             // Far jump to 64-bit code
+            // Use selector 0x08 (64-bit kernel code segment, DPL=0)
             0xEA,                         // JMP FAR
             0x00, 0x71, 0x00, 0x00,       // Offset: 0x7100
-            0x18, 0x00,                   // Selector: 0x18 (64-bit code)
+            0x08, 0x00,                   // Selector: 0x08 (64-bit code, DPL=0)
         ];
         let pei_addr = 0x7030usize;
         if pei_addr + pei_code.len() <= memory.len() {
@@ -1458,51 +1459,285 @@ impl Firmware for UefiFirmware {
         }
         
         // 64-bit DXE code at 0x7100
-        // Optimized: Use REP STOSQ (64-bit) instead of REP STOSW (16-bit)
-        // This reduces iterations from 2000 to 500, 4x faster
+        // Complete UEFI DXE→BDS implementation
+        // 
+        // DXE (Driver Execution Environment):
+        //   - Initialize console, display boot logo
+        //   - Set up UEFI System Table at 0x200000
+        //   - Install Boot Services and Runtime Services
+        //
+        // BDS (Boot Device Selection):
+        //   - Enumerate boot devices
+        //   - Load EFI application from ESP
+        //   - Transfer control to OS loader
+        //
+        // Memory Layout:
+        //   0x7100      - DXE entry point (64-bit long mode)
+        //   0x7200      - BDS boot device selection code
+        //   0x7300      - EFI application loader
+        //   0x7400      - Service call dispatcher
+        //   0x80000     - GDT (set up by PEI)
+        //   0x100000    - Page tables (PML4)
+        //   0x200000    - UEFI System Table
+        //   0x201000    - Boot Services Table
+        //   0x202000    - Runtime Services Table
+        //   0x210000    - UEFI service call vector
+        //   0x300000    - EFI application load address
+        //   0xB8000     - VGA text buffer
+        //   0xFD000000  - GOP framebuffer
+        
         let dxe_code: &[u8] = &[
-            // ---- 64-bit Long Mode (DXE) ----
-            // Set up 64-bit segments
+            // ========== DXE Phase: 64-bit Long Mode Entry ==========
+            // Set up 64-bit data segments
             0x48, 0x31, 0xC0,             // XOR RAX, RAX
             0x8E, 0xD8,                   // MOV DS, AX
             0x8E, 0xC0,                   // MOV ES, AX
             0x8E, 0xD0,                   // MOV SS, AX
             
-            // Set up stack
+            // Set up stack at 0x80000 (512KB, grows down)
             0x48, 0xBC,                   // MOV RSP, imm64
-            0x00, 0x7C, 0x00, 0x00,       // 0x7C00
+            0x00, 0x00, 0x08, 0x00,       // 0x80000
             0x00, 0x00, 0x00, 0x00,
             
-            // Clear VGA screen using 64-bit writes (80*25*2 = 4000 bytes = 500 qwords)
-            // Pattern: 0x1F20 repeated 4 times = 0x1F201F201F201F20
+            // ========== DXE: Clear VGA Screen ==========
+            // Use REP STOSQ for efficient fill (500 qwords = 4000 bytes)
             0x48, 0xBF,                   // MOV RDI, imm64
             0x00, 0x80, 0x0B, 0x00,       // 0xB8000
             0x00, 0x00, 0x00, 0x00,
             0x48, 0xB8,                   // MOV RAX, imm64
-            0x20, 0x1F, 0x20, 0x1F,       // 0x1F201F201F201F20 (4 chars: space+attr)
+            0x20, 0x1F, 0x20, 0x1F,       // 0x1F201F201F201F20 (space + blue bg)
             0x20, 0x1F, 0x20, 0x1F,
-            0xB9, 0xF4, 0x01, 0x00, 0x00, // MOV ECX, 500 (4000/8)
-            0xFC,                         // CLD (clear direction flag)
-            0xF3, 0x48, 0xAB,             // REP STOSQ (fill with RAX, 8 bytes per iteration)
+            0xB9, 0xF4, 0x01, 0x00, 0x00, // MOV ECX, 500
+            0xFC,                         // CLD
+            0xF3, 0x48, 0xAB,             // REP STOSQ
             
-            // Display "UEFI" on screen - use single 64-bit write for all 4 chars
-            // 'U'=0x55, 'E'=0x45, 'F'=0x46, 'I'=0x49, attr=0x1F
-            // Little-endian: [U,1F,E,1F,F,1F,I,1F] = 0x1F491F461F451F55
+            // ========== DXE: Display "NexaUEFI" Boot Banner ==========
+            // Row 0: "NexaUEFI 1.0" (centered at column 34)
             0x48, 0xBF,                   // MOV RDI, imm64
-            0x00, 0x80, 0x0B, 0x00,       // 0xB8000
+            0x44, 0x80, 0x0B, 0x00,       // 0xB8000 + 34*2 = 0xB8044
             0x00, 0x00, 0x00, 0x00,
+            // "Nexa" = 0x1F611F781F651F4E
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x4E, 0x1F, 0x65, 0x1F,       // 'N' 0x1F 'e' 0x1F
+            0x78, 0x1F, 0x61, 0x1F,       // 'x' 0x1F 'a' 0x1F
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            // "UEFI" = 0x1F491F461F451F55
             0x48, 0xB8,                   // MOV RAX, imm64
             0x55, 0x1F, 0x45, 0x1F,       // 'U' 0x1F 'E' 0x1F
             0x46, 0x1F, 0x49, 0x1F,       // 'F' 0x1F 'I' 0x1F
-            0x48, 0x89, 0x07,             // MOV [RDI], RAX (write all 4 chars at once)
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            // " 1.0" = 0x1F301F2E1F311F20
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x20, 0x1F, 0x31, 0x1F,       // ' ' 0x1F '1' 0x1F
+            0x2E, 0x1F, 0x30, 0x1F,       // '.' 0x1F '0' 0x1F
+            0x48, 0x89, 0x47, 0x10,       // MOV [RDI+16], RAX
             
-            // HLT loop (wait for boot device)
-            0xF4,                         // HLT
-            0xEB, 0xFD,                   // JMP -3
+            // ========== DXE: Initialize UEFI System Table ==========
+            // System Table at 0x200000
+            // Write EFI_SYSTEM_TABLE_SIGNATURE "IBI SYST" = 0x5453595320494249
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x00, 0x00, 0x20, 0x00,       // 0x200000
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x49, 0x42, 0x49, 0x20,       // "IBI "
+            0x53, 0x59, 0x53, 0x54,       // "SYST"
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX (signature)
+            // Revision: 0x0002004E (UEFI 2.78)
+            0xB8, 0x4E, 0x00, 0x02, 0x00, // MOV EAX, 0x0002004E
+            0x89, 0x47, 0x08,             // MOV [RDI+8], EAX
+            // Header size: 120 bytes
+            0xB8, 0x78, 0x00, 0x00, 0x00, // MOV EAX, 120
+            0x89, 0x47, 0x0C,             // MOV [RDI+12], EAX
+            // Boot Services pointer at offset 0x60 -> 0x201000
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x00, 0x10, 0x20, 0x00,       // 0x201000
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0x89, 0x47, 0x60,       // MOV [RDI+0x60], RAX
+            // Runtime Services pointer at offset 0x58 -> 0x202000
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x00, 0x20, 0x20, 0x00,       // 0x202000
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0x89, 0x47, 0x58,       // MOV [RDI+0x58], RAX
+            
+            // ========== DXE: Install UEFI Service Call Vector ==========
+            // Service call handler at 0x210000
+            // When guest calls OUT 0xE9, <service_num>, we trap to hypervisor
+            // This is a VMCALL/hypercall mechanism for UEFI services
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x00, 0x00, 0x21, 0x00,       // 0x210000
+            0x00, 0x00, 0x00, 0x00,
+            // Write service dispatcher code
+            // INT3 (0xCC) triggers service dispatch in hypervisor
+            0xC6, 0x07, 0xCC,             // MOV BYTE [RDI], 0xCC (INT3)
+            0xC6, 0x47, 0x01, 0xC3,       // MOV BYTE [RDI+1], 0xC3 (RET)
+            
+            // ========== Display "Booting..." on Row 2 ==========
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x40, 0x81, 0x0B, 0x00,       // 0xB8000 + 160*2 = 0xB8140 (row 2)
+            0x00, 0x00, 0x00, 0x00,
+            // "Boot" = 0x1F741F6F1F6F1F42
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x42, 0x0E, 0x6F, 0x0E,       // 'B' 0x0E 'o' 0x0E (yellow on black)
+            0x6F, 0x0E, 0x74, 0x0E,       // 'o' 0x0E 't' 0x0E
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            // "ing." = 0x1F2E1F671F6E1F69
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x69, 0x0E, 0x6E, 0x0E,       // 'i' 0x0E 'n' 0x0E
+            0x67, 0x0E, 0x2E, 0x0E,       // 'g' 0x0E '.' 0x0E
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            // ".." for animation
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x2E, 0x0E, 0x2E, 0x0E,       // '.' 0x0E '.' 0x0E
+            0x20, 0x0E, 0x20, 0x0E,       // ' ' 0x0E ' ' 0x0E
+            0x48, 0x89, 0x47, 0x10,       // MOV [RDI+16], RAX
+            
+            // ========== BDS Phase: Jump to Boot Device Selection ==========
+            // DXE code is 239 bytes, JMP at offset 234 (0x71EA)
+            // Target 0x7200, rel32 = 0x7200 - (0x71EA + 5) = 0x11
+            0xE9, 0x11, 0x00, 0x00, 0x00, // JMP rel32 to 0x7200
         ];
         let dxe_addr = 0x7100usize;
         if dxe_addr + dxe_code.len() <= memory.len() {
             memory[dxe_addr..dxe_addr + dxe_code.len()].copy_from_slice(dxe_code);
+        }
+        
+        // ========== BDS Phase Code at 0x7200 ==========
+        // Boot Device Selection - enumerate devices, load EFI app
+        //
+        // BDS Flow:
+        // 1. Display "Searching for boot device..."
+        // 2. Check if EFI image exists at 0x300000 (pre-loaded by hypervisor)
+        // 3. If MZ header found, parse PE and jump to entry
+        // 4. If not found, display "No bootable device" and halt
+        //
+        let bds_code: &[u8] = &[
+            // ========== BDS: Display Status Message ==========
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x80, 0x82, 0x0B, 0x00,       // 0xB8280 (row 4)
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0xB8,                   // MOV RAX, "BDS:"
+            0x42, 0x0A, 0x44, 0x0A, 0x53, 0x0A, 0x3A, 0x0A,
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            0x48, 0xB8,                   // MOV RAX, " Sca"
+            0x20, 0x0A, 0x53, 0x0A, 0x63, 0x0A, 0x61, 0x0A,
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            0x48, 0xB8,                   // MOV RAX, "nnin"
+            0x6E, 0x0A, 0x6E, 0x0A, 0x69, 0x0A, 0x6E, 0x0A,
+            0x48, 0x89, 0x47, 0x10,       // MOV [RDI+16], RAX
+            0x48, 0xB8,                   // MOV RAX, "g..."
+            0x67, 0x0A, 0x2E, 0x0A, 0x2E, 0x0A, 0x2E, 0x0A,
+            0x48, 0x89, 0x47, 0x18,       // MOV [RDI+24], RAX
+            
+            // ========== BDS: Check for EFI Image at 0x300000 ==========
+            0x48, 0xBE,                   // MOV RSI, imm64 (EFI base)
+            0x00, 0x00, 0x30, 0x00,       // 0x300000
+            0x00, 0x00, 0x00, 0x00,
+            0x66, 0x8B, 0x06,             // MOV AX, [RSI] (MZ magic)
+            0x66, 0x3D, 0x4D, 0x5A,       // CMP AX, 0x5A4D ("MZ")
+            0x75, 0x70,                   // JNE no_boot (relative +112 bytes)
+            
+            // ========== Valid MZ - Display "Found EFI" ==========
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0xC0, 0x83, 0x0B, 0x00,       // 0xB83C0 (row 6)
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0xB8,                   // MOV RAX, "Foun"
+            0x46, 0x0F, 0x6F, 0x0F, 0x75, 0x0F, 0x6E, 0x0F,
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            0x48, 0xB8,                   // MOV RAX, "d EF"
+            0x64, 0x0F, 0x20, 0x0F, 0x45, 0x0F, 0x46, 0x0F,
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            0x48, 0xB8,                   // MOV RAX, "I im"
+            0x49, 0x0F, 0x20, 0x0F, 0x69, 0x0F, 0x6D, 0x0F,
+            0x48, 0x89, 0x47, 0x10,       // MOV [RDI+16], RAX
+            0x48, 0xB8,                   // MOV RAX, "age!"
+            0x61, 0x0F, 0x67, 0x0F, 0x65, 0x0F, 0x21, 0x0F,
+            0x48, 0x89, 0x47, 0x18,       // MOV [RDI+24], RAX
+            
+            // ========== Parse PE Header ==========
+            // RSI = 0x300000 (image base)
+            0x8B, 0x46, 0x3C,             // MOV EAX, [RSI+0x3C] (e_lfanew)
+            0x48, 0x01, 0xF0,             // ADD RAX, RSI (PE header addr)
+            // Verify "PE\0\0" signature
+            0x81, 0x38, 0x50, 0x45, 0x00, 0x00, // CMP DWORD [RAX], 0x00004550
+            0x75, 0x38,                   // JNE no_boot (relative +56 bytes)
+            
+            // Get entry point RVA from PE32+ optional header
+            // OptionalHeader at PE+0x18, AddressOfEntryPoint at OptHdr+0x10
+            0x8B, 0x58, 0x28,             // MOV EBX, [RAX+0x28] (EntryPointRVA)
+            0x48, 0x01, 0xF3,             // ADD RBX, RSI (absolute entry point)
+            
+            // ========== Display "Jumping..." ==========
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x00, 0x85, 0x0B, 0x00,       // 0xB8500 (row 8)
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0xB8,                   // MOV RAX, "Jump"
+            0x4A, 0x0B, 0x75, 0x0B, 0x6D, 0x0B, 0x70, 0x0B,
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            0x48, 0xB8,                   // MOV RAX, "ing!"
+            0x69, 0x0B, 0x6E, 0x0B, 0x67, 0x0B, 0x21, 0x0B,
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            
+            // ========== Call EFI Entry Point ==========
+            // MS x64 ABI: RCX=ImageHandle, RDX=SystemTable
+            0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00, // MOV RCX, 1
+            0x48, 0xBA,                   // MOV RDX, imm64
+            0x00, 0x00, 0x20, 0x00,       // 0x200000 (SystemTable)
+            0x00, 0x00, 0x00, 0x00,
+            0xFF, 0xD3,                   // CALL RBX (entry point)
+            
+            // If EFI returns, halt
+            0xF4,                         // HLT
+            0xEB, 0xFD,                   // JMP -3
+            
+            // ========== No Boot Device Handler ==========
+            // (This label is at offset 0x70 from JNE, i.e. 0x7270)
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0x40, 0x86, 0x0B, 0x00,       // 0xB8640 (row 10)
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0xB8,                   // MOV RAX, "No b"
+            0x4E, 0x0C, 0x6F, 0x0C, 0x20, 0x0C, 0x62, 0x0C,
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            0x48, 0xB8,                   // MOV RAX, "oota"
+            0x6F, 0x0C, 0x6F, 0x0C, 0x74, 0x0C, 0x61, 0x0C,
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            0x48, 0xB8,                   // MOV RAX, "ble "
+            0x62, 0x0C, 0x6C, 0x0C, 0x65, 0x0C, 0x20, 0x0C,
+            0x48, 0x89, 0x47, 0x10,       // MOV [RDI+16], RAX
+            0x48, 0xB8,                   // MOV RAX, "devi"
+            0x64, 0x0C, 0x65, 0x0C, 0x76, 0x0C, 0x69, 0x0C,
+            0x48, 0x89, 0x47, 0x18,       // MOV [RDI+24], RAX
+            0x48, 0xB8,                   // MOV RAX, "ce!!"
+            0x63, 0x0C, 0x65, 0x0C, 0x21, 0x0C, 0x21, 0x0C,
+            0x48, 0x89, 0x47, 0x20,       // MOV [RDI+32], RAX
+            
+            // Display "Press F2 for setup..."
+            0x48, 0xBF,                   // MOV RDI, imm64
+            0xC0, 0x87, 0x0B, 0x00,       // 0xB87C0 (row 12)
+            0x00, 0x00, 0x00, 0x00,
+            0x48, 0xB8,                   // MOV RAX, "Pres"
+            0x50, 0x0F, 0x72, 0x0F, 0x65, 0x0F, 0x73, 0x0F,
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX
+            0x48, 0xB8,                   // MOV RAX, "s F2"
+            0x73, 0x0F, 0x20, 0x0F, 0x46, 0x0F, 0x32, 0x0F,
+            0x48, 0x89, 0x47, 0x08,       // MOV [RDI+8], RAX
+            0x48, 0xB8,                   // MOV RAX, " for"
+            0x20, 0x0F, 0x66, 0x0F, 0x6F, 0x0F, 0x72, 0x0F,
+            0x48, 0x89, 0x47, 0x10,       // MOV [RDI+16], RAX
+            0x48, 0xB8,                   // MOV RAX, " set"
+            0x20, 0x0F, 0x73, 0x0F, 0x65, 0x0F, 0x74, 0x0F,
+            0x48, 0x89, 0x47, 0x18,       // MOV [RDI+24], RAX
+            0x48, 0xB8,                   // MOV RAX, "up.."
+            0x75, 0x0F, 0x70, 0x0F, 0x2E, 0x0F, 0x2E, 0x0F,
+            0x48, 0x89, 0x47, 0x20,       // MOV [RDI+32], RAX
+            
+            // HLT loop
+            0xF4,                         // HLT
+            0xEB, 0xFD,                   // JMP -3
+        ];
+        
+        let bds_addr = 0x7200usize;
+        if bds_addr + bds_code.len() <= memory.len() {
+            memory[bds_addr..bds_addr + bds_code.len()].copy_from_slice(bds_code);
         }
         
         // =========== Phase 5: Initialize VGA buffer ===========

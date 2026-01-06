@@ -60,7 +60,16 @@ use super::loop_opt::{LoopOptResult, LoopStats, LicmStats, IvOptStats, UnrollSta
 use std::sync::atomic::AtomicU64;
 
 /// NReady! cache version
-pub const NREADY_VERSION: u32 = 1;
+/// 
+/// IMPORTANT: Increment this when:
+/// - Native code ABI changes (prologue/epilogue, register allocation)
+/// - JitState layout changes
+/// - IR format changes incompatibly
+///
+/// Version history:
+/// - v1: Initial version
+/// - v2: Fixed callee-saved register preservation (R12-R14)
+pub const NREADY_VERSION: u32 = 2;
 
 /// Profile format magic
 pub const PROFILE_MAGIC: &[u8; 4] = b"NVMP";
@@ -74,16 +83,136 @@ pub const NATIVE_MAGIC: &[u8; 4] = b"NVNC";
 /// Optimization metadata format magic
 pub const OPTMETA_MAGIC: &[u8; 4] = b"NVOM";
 
+/// Platform compatibility information for native code
+/// 
+/// Native code is ONLY valid when ALL of these match:
+/// - JIT version (codegen ABI)
+/// - Architecture (x86_64, aarch64)
+/// - OS (Linux, Windows, macOS)
+/// - CPU feature flags (used during compilation)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlatformInfo {
+    pub jit_version: u32,
+    pub arch: Architecture,
+    pub os: OperatingSystem,
+    pub cpu_features: u64,  // Bitmask of required CPU features
+}
+
+impl PlatformInfo {
+    /// Create PlatformInfo for current host
+    pub fn current() -> Self {
+        Self {
+            jit_version: NREADY_VERSION,
+            arch: Architecture::current(),
+            os: OperatingSystem::current(),
+            cpu_features: detect_cpu_features(),
+        }
+    }
+    
+    /// Check if this platform info is compatible with native code
+    pub fn is_compatible(&self, other: &PlatformInfo) -> bool {
+        self.jit_version == other.jit_version
+            && self.arch == other.arch
+            && self.os == other.os
+            // CPU features: cached code must not use features we don't have
+            && (other.cpu_features & !self.cpu_features) == 0
+    }
+    
+    /// Serialize to bytes (16 bytes)
+    pub fn serialize(&self) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[0..4].copy_from_slice(&self.jit_version.to_le_bytes());
+        buf[4] = self.arch.to_u8();
+        buf[5] = self.os.to_u8();
+        buf[6..8].copy_from_slice(&[0, 0]); // padding
+        buf[8..16].copy_from_slice(&self.cpu_features.to_le_bytes());
+        buf
+    }
+    
+    /// Deserialize from bytes
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < 16 {
+            return None;
+        }
+        Some(Self {
+            jit_version: u32::from_le_bytes(data[0..4].try_into().ok()?),
+            arch: Architecture::from_u8(data[4])?,
+            os: OperatingSystem::from_u8(data[5])?,
+            cpu_features: u64::from_le_bytes(data[8..16].try_into().ok()?),
+        })
+    }
+}
+
+/// Target operating system
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperatingSystem {
+    Linux,
+    Windows,
+    MacOS,
+    Unknown,
+}
+
+impl OperatingSystem {
+    pub fn current() -> Self {
+        #[cfg(target_os = "linux")]
+        { Self::Linux }
+        #[cfg(target_os = "windows")]
+        { Self::Windows }
+        #[cfg(target_os = "macos")]
+        { Self::MacOS }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        { Self::Unknown }
+    }
+    
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Linux => 0,
+            Self::Windows => 1,
+            Self::MacOS => 2,
+            Self::Unknown => 255,
+        }
+    }
+    
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Linux),
+            1 => Some(Self::Windows),
+            2 => Some(Self::MacOS),
+            255 => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// Detect CPU features used by JIT codegen
+fn detect_cpu_features() -> u64 {
+    let mut features = 0u64;
+    
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Use CPUID to detect features
+        if is_x86_feature_detected!("sse2") { features |= 1 << 0; }
+        if is_x86_feature_detected!("sse4.1") { features |= 1 << 1; }
+        if is_x86_feature_detected!("sse4.2") { features |= 1 << 2; }
+        if is_x86_feature_detected!("avx") { features |= 1 << 3; }
+        if is_x86_feature_detected!("avx2") { features |= 1 << 4; }
+        if is_x86_feature_detected!("bmi1") { features |= 1 << 5; }
+        if is_x86_feature_detected!("bmi2") { features |= 1 << 6; }
+        if is_x86_feature_detected!("popcnt") { features |= 1 << 7; }
+        if is_x86_feature_detected!("lzcnt") { features |= 1 << 8; }
+    }
+    
+    features
+}
+
 /// NReady! cache manager
 pub struct NReadyCache {
     /// Base directory for cache files
     cache_dir: String,
     /// VM instance ID (for isolation)
     instance_id: String,
-    /// JIT version (for native code compatibility)
-    jit_version: u32,
-    /// Target architecture
-    arch: Architecture,
+    /// Current platform info
+    platform: PlatformInfo,
 }
 
 /// Target architecture
@@ -94,6 +223,15 @@ pub enum Architecture {
 }
 
 impl Architecture {
+    pub fn current() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        { Self::X86_64 }
+        #[cfg(target_arch = "aarch64")]
+        { Self::Aarch64 }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        { panic!("Unsupported architecture") }
+    }
+    
     fn to_u8(self) -> u8 {
         match self {
             Architecture::X86_64 => 0,
@@ -247,11 +385,14 @@ impl NReadyCache {
             log::info!("[NReady!] Cache directory: {}", cache_dir);
         }
         
+        let platform = PlatformInfo::current();
+        log::info!("[NReady!] Platform: JIT v{}, {:?}, {:?}, CPU features: {:?}",
+            platform.jit_version, platform.arch, platform.os, platform.cpu_features);
+        
         Self {
             cache_dir: cache_dir.to_string(),
             instance_id: instance_id.to_string(),
-            jit_version: NREADY_VERSION,
-            arch: Architecture::X86_64,
+            platform,
         }
     }
     
@@ -1364,11 +1505,9 @@ impl NReadyCache {
         let path = self.native_path();
         let mut data = Vec::new();
         
-        // Header with version info for compatibility check on load
+        // Header: Magic (4) + PlatformInfo (16) + Block count (4) = 24 bytes
         data.extend_from_slice(NATIVE_MAGIC);
-        data.extend_from_slice(&self.jit_version.to_le_bytes());
-        data.push(self.arch.to_u8());
-        data.extend_from_slice(&[0, 0, 0]); // Padding for alignment
+        data.extend_from_slice(&self.platform.serialize());
         
         // Block count
         data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
@@ -1438,11 +1577,9 @@ impl NReadyCache {
     fn serialize_native(&self, blocks: &HashMap<u64, CompiledBlock>) -> JitResult<Vec<u8>> {
         let mut data = Vec::new();
         
-        // Header
+        // Header: Magic (4) + PlatformInfo (16) + Block count (4) = 24 bytes
         data.extend_from_slice(NATIVE_MAGIC);
-        data.extend_from_slice(&self.jit_version.to_le_bytes());
-        data.push(self.arch.to_u8());
-        data.extend_from_slice(&[0, 0, 0]); // Padding
+        data.extend_from_slice(&self.platform.serialize());
         
         // Block count
         data.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
@@ -1481,7 +1618,8 @@ impl NReadyCache {
     }
     
     fn deserialize_native(&self, data: &[u8]) -> JitResult<Option<HashMap<u64, NativeBlockInfo>>> {
-        if data.len() < 16 {
+        // Header: Magic (4) + PlatformInfo (16) + Block count (4) = 24 bytes
+        if data.len() < 24 {
             return Err(JitError::InvalidFormat);
         }
         
@@ -1489,17 +1627,19 @@ impl NReadyCache {
             return Err(JitError::InvalidFormat);
         }
         
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let arch = Architecture::from_u8(data[8])
+        // Deserialize and validate platform info
+        let cached_platform = PlatformInfo::deserialize(&data[4..20])
             .ok_or(JitError::InvalidFormat)?;
         
-        // Native code requires exact version AND architecture match
-        if version != self.jit_version || arch != self.arch {
-            return Ok(None); // Must recompile
+        // Check full platform compatibility (version, arch, OS, CPU features)
+        if !cached_platform.is_compatible(&self.platform) {
+            log::info!("[NReady!] Native code incompatible: cached {:?} vs current {:?}",
+                cached_platform, self.platform);
+            return Ok(None); // Must recompile from IR
         }
         
-        let block_count = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
-        let mut offset = 16;
+        let block_count = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+        let mut offset = 24;
         let mut blocks = HashMap::new();
         
         // Each block header is 40 bytes (see save_native_from_persist for layout)
@@ -1548,7 +1688,7 @@ impl NReadyCache {
     }
     
     fn native_path(&self) -> String {
-        format!("{}/{}.{}.native", self.cache_dir, self.instance_id, self.jit_version)
+        format!("{}/{}.v{}.native", self.cache_dir, self.instance_id, self.platform.jit_version)
     }
     
     // ========================================================================
@@ -1670,10 +1810,9 @@ impl NReadyCache {
         let path = self.evicted_block_path(block.rip);
         let mut data = Vec::new();
         
-        // Header: magic + version + flags
+        // Header: magic (4) + platform (16) + flags (1) + padding (3) = 24 bytes
         data.extend_from_slice(b"NVEV"); // NVM EVicted block
-        data.extend_from_slice(&self.jit_version.to_le_bytes());
-        data.push(self.arch.to_u8());
+        data.extend_from_slice(&self.platform.serialize());
         
         // Flags: bit0 = has_native, bit1 = has_ir, bit2 = has_opt_meta
         let has_native = !block.native_code.is_empty();
@@ -1751,8 +1890,8 @@ impl NReadyCache {
         file.read_to_end(&mut data)
             .map_err(|_| JitError::IoError)?;
         
-        // Parse header
-        if data.len() < 12 {
+        // Parse header: magic (4) + platform (16) + flags (1) + padding (3) = 24 bytes
+        if data.len() < 24 {
             return Err(JitError::InvalidFormat);
         }
         
@@ -1760,20 +1899,19 @@ impl NReadyCache {
             return Err(JitError::InvalidFormat);
         }
         
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let arch = Architecture::from_u8(data[8])
+        let cached_platform = PlatformInfo::deserialize(&data[4..20])
             .ok_or(JitError::InvalidFormat)?;
         
-        // Version/arch mismatch means native code is stale
-        let version_match = version == self.jit_version && arch == self.arch;
+        // Version/arch mismatch means native code is stale, but IR may still be usable
+        let platform_compatible = cached_platform.is_compatible(&self.platform);
         
-        let flags = data[9];
+        let flags = data[20];
         let has_native = (flags & 1) != 0;
         let has_ir = (flags & 2) != 0;
         let has_opt_meta = (flags & 4) != 0;
         
-        // Parse metadata
-        let mut offset = 12;
+        // Parse metadata (starts at offset 24)
+        let mut offset = 24;
         if offset + 32 > data.len() {
             return Err(JitError::InvalidFormat);
         }
@@ -1803,8 +1941,8 @@ impl NReadyCache {
         let exec_count = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
         offset += 8;
         
-        // Parse native code (only if version matches)
-        let native_code = if has_native && version_match {
+        // Parse native code (only if platform matches)
+        let native_code = if has_native && platform_compatible {
             if offset + 4 > data.len() {
                 return Err(JitError::InvalidFormat);
             }
@@ -1818,7 +1956,7 @@ impl NReadyCache {
             offset += native_len;
             Some(code)
         } else if has_native {
-            // Skip native code if version mismatch
+            // Skip native code if platform mismatch (will recompile from IR)
             if offset + 4 > data.len() {
                 return Err(JitError::InvalidFormat);
             }

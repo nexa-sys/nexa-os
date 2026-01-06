@@ -188,6 +188,28 @@ impl S2Compiler {
         self
     }
     
+    /// Generate native code directly from IR (used by NReady! cache restoration)
+    /// 
+    /// This is a simplified path that skips optimization passes and just does:
+    /// 1. Register allocation
+    /// 2. Instruction scheduling (if enabled)
+    /// 3. Code generation
+    /// 
+    /// For full optimization, use `compile_from_s1()` instead.
+    pub fn codegen_from_ir(&self, ir: &IrBlock) -> JitResult<Vec<u8>> {
+        // Skip optimization passes since this IR may already be optimized
+        // (e.g., restored from NReady! cache where S2 optimization was applied)
+        
+        // Register allocation
+        let reg_alloc = self.allocate_registers(ir);
+        
+        // Create dummy profile for codegen (no speculation)
+        let profile = ProfileDb::new(1024);
+        
+        // Code generation
+        self.codegen(ir, &reg_alloc, &profile)
+    }
+    
     /// Recompile an S1 block with full optimizations
     pub fn compile_from_s1(
         &self,

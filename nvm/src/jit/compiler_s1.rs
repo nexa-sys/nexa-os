@@ -320,6 +320,28 @@ impl S1Compiler {
         }
     }
     
+    /// Generate native code directly from IR (skip decoding)
+    /// 
+    /// Used by NReady! to recompile cached IR when native code version is stale.
+    pub fn codegen_from_ir(&self, ir: &IrBlock) -> JitResult<Vec<u8>> {
+        // Apply S1 optimizations to a cloned IR
+        let mut ir_clone = ir.clone();
+        
+        if self.config.const_fold {
+            self.const_fold(&mut ir_clone);
+        }
+        if self.config.dead_code_elim {
+            self.dead_code_elim(&mut ir_clone);
+        }
+        if self.config.peephole {
+            self.peephole(&mut ir_clone);
+        }
+        
+        // Create a dummy profile for codegen (not used for S1)
+        let dummy_profile = ProfileDb::new(1024);
+        self.codegen(&ir_clone, &dummy_profile)
+    }
+
     /// Generate native code from IR with proper register allocation
     fn codegen(&self, ir: &IrBlock, _profile: &ProfileDb) -> JitResult<Vec<u8>> {
         let mut code = Vec::new();
@@ -345,14 +367,23 @@ impl S1Compiler {
         let spill_size = allocator.spill_size();
         
         // Prologue:
-        // 1. Save R15 (callee-saved) - we use it as JitState pointer
-        // 2. mov r15, rdi - save JitState pointer to R15
-        // 3. Allocate spill slots if needed
+        // Save all callee-saved registers we use: RBX, RBP, R12, R13, R14, R15
+        // (System V AMD64 ABI requires callee to preserve these)
         
-        // push r15
+        // push r15  (JitState pointer)
         code.extend_from_slice(&[0x41, 0x57]);
+        // push r14
+        code.extend_from_slice(&[0x41, 0x56]);
+        // push r13
+        code.extend_from_slice(&[0x41, 0x55]);
+        // push r12
+        code.extend_from_slice(&[0x41, 0x54]);
+        // push rbp
+        code.push(0x55);
+        // push rbx
+        code.push(0x53);
         
-        // mov r15, rdi
+        // mov r15, rdi - save JitState pointer to R15
         code.extend_from_slice(&[0x49, 0x89, 0xFF]);
         
         // sub rsp, spill_size (if needed)
@@ -391,7 +422,7 @@ impl S1Compiler {
             }
         }
         
-        // Epilogue: restore spill space and R15, then return 0
+        // Epilogue: restore spill space and callee-saved registers, then return 0
         if spill_size > 0 {
             if spill_size <= 127 {
                 code.extend_from_slice(&[0x48, 0x83, 0xC4, spill_size as u8]);
@@ -401,6 +432,17 @@ impl S1Compiler {
             }
         }
         
+        // Restore callee-saved registers in reverse order
+        // pop rbx
+        code.push(0x5B);
+        // pop rbp
+        code.push(0x5D);
+        // pop r12
+        code.extend_from_slice(&[0x41, 0x5C]);
+        // pop r13
+        code.extend_from_slice(&[0x41, 0x5D]);
+        // pop r14
+        code.extend_from_slice(&[0x41, 0x5E]);
         // pop r15
         code.extend_from_slice(&[0x41, 0x5F]);
         
@@ -497,7 +539,7 @@ impl S1Compiler {
         Ok(())
     }
     
-    /// Emit full epilogue: add rsp, spill_size; load rip from JitState; encode result; pop r15; ret
+    /// Emit full epilogue: add rsp, spill_size; load rip from JitState; encode result; restore callee-saved; ret
     /// 
     /// Result encoding (64-bit):
     /// - Bits 63-56: exit kind (0=Continue, 1=Halt, 2=Interrupt, etc.)
@@ -535,6 +577,17 @@ impl S1Compiler {
             code.extend_from_slice(&[0x4C, 0x09, 0xD8]);
         }
         
+        // Restore callee-saved registers in reverse order (must match prologue)
+        // pop rbx
+        code.push(0x5B);
+        // pop rbp
+        code.push(0x5D);
+        // pop r12
+        code.extend_from_slice(&[0x41, 0x5C]);
+        // pop r13
+        code.extend_from_slice(&[0x41, 0x5D]);
+        // pop r14
+        code.extend_from_slice(&[0x41, 0x5E]);
         // pop r15
         code.extend_from_slice(&[0x41, 0x5F]);
         
@@ -1031,6 +1084,8 @@ fn emit_store_to_jitstate(code: &mut Vec<u8>, offset: i32, reg: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jit::profile::ProfileDb;
+    use std::sync::Arc;
     
     #[test]
     fn test_peephole_add_zero() {
@@ -1046,5 +1101,89 @@ mod tests {
         
         compiler.peephole(&mut ir);
         // Would check that add with const 0 became copy
+    }
+    
+    #[test]
+    fn test_s1_jmp_rel8_native_execution() {
+        // Test compiling JMP rel8 (EB FD = JMP -3) and verify the native code can execute
+        let compiler = S1Compiler::new();
+        let decoder = super::super::decoder::X86Decoder::new();
+        let profile = Arc::new(ProfileDb::new(100));
+        
+        // JMP rel8 -3 (EB FD) at address 0x72e2, jumps to 0x72e1
+        let guest_code: [u8; 2] = [0xEB, 0xFD];
+        let start_rip = 0x72e2u64;
+        
+        let result = compiler.compile(&guest_code, start_rip, &decoder, &profile);
+        assert!(result.is_ok(), "S1 compile should succeed");
+        
+        let s1_block = result.unwrap();
+        println!("Native code size: {} bytes", s1_block.native.len());
+        println!("IR blocks: {}", s1_block.ir.blocks.len());
+        println!("IR instrs in block 0: {}", s1_block.ir.blocks[0].instrs.len());
+        
+        // Print all IR instructions
+        for (i, instr) in s1_block.ir.blocks[0].instrs.iter().enumerate() {
+            println!("  IR[{}]: dst={:?} op={:?}", i, instr.dst, instr.op);
+        }
+        
+        // Print native code as hex
+        println!("Native code:");
+        for (i, chunk) in s1_block.native.chunks(16).enumerate() {
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+            println!("  {:04x}: {}", i * 16, hex.join(" "));
+        }
+        
+        // Now try to execute it with a mock JitState
+        use crate::jit::JitState;
+        
+        let mut jit_state = JitState::new();
+        jit_state.rip = start_rip;
+        
+        // Allocate executable memory
+        let exec_mem = unsafe {
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            );
+            assert!(ptr != libc::MAP_FAILED, "mmap failed");
+            ptr as *mut u8
+        };
+        
+        // Copy native code
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                s1_block.native.as_ptr(),
+                exec_mem,
+                s1_block.native.len(),
+            );
+        }
+        
+        // Execute
+        println!("Executing native code at {:p}...", exec_mem);
+        let result = unsafe {
+            let func: extern "C" fn(*mut JitState) -> u64 = 
+                std::mem::transmute(exec_mem as *const u8);
+            func(&mut jit_state as *mut JitState)
+        };
+        
+        println!("Execution result: {:#x}", result);
+        println!("JitState.rip after: {:#x}", jit_state.rip);
+        
+        // Clean up
+        unsafe {
+            libc::munmap(exec_mem as *mut libc::c_void, 4096);
+        }
+        
+        // Verify result
+        // For JMP rel8 -3 at 0x72e2: target = 0x72e2 + 2 + (-3) = 0x72e1
+        // Exit(Normal) returns kind=0 in high byte, rip in low bytes
+        assert_eq!(result >> 56, 0, "Exit kind should be 0 (Continue)");
+        assert_eq!(result & 0x00FF_FFFF_FFFF_FFFF, 0x72e1, "Next RIP should be 0x72e1");
+        assert_eq!(jit_state.rip, 0x72e1, "JitState.rip should be updated to 0x72e1");
     }
 }
