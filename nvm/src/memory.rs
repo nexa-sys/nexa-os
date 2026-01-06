@@ -315,6 +315,23 @@ impl PhysicalMemory {
         }
     }
     
+    /// Get a mutable slice of physical memory
+    /// 
+    /// # Safety
+    /// This provides direct access to memory. Caller must ensure:
+    /// - No concurrent access to the same region
+    /// - Proper bounds checking
+    #[inline]
+    pub fn as_slice_mut(&self, addr: usize, len: usize) -> &mut [u8] {
+        if addr + len > self.ram_size {
+            panic!("as_slice_mut: address range {:#x}-{:#x} out of bounds", 
+                   addr, addr + len);
+        }
+        unsafe {
+            std::slice::from_raw_parts_mut(self.ram_base.add(addr), len)
+        }
+    }
+    
     /// Get raw pointer to physical address (for direct access)
     /// 
     /// # Safety
@@ -526,6 +543,16 @@ impl Drop for MockPageAllocator {
 pub trait MmioHandler: Send + Sync {
     fn read(&self, offset: usize, size: u8) -> u64;
     fn write(&self, offset: usize, size: u8, value: u64);
+    
+    /// Bulk fill operation for REP STOS optimization
+    /// Default implementation falls back to individual writes
+    /// Returns number of units actually written
+    fn fill(&self, offset: usize, value: u64, count: usize, unit_size: u8) -> usize {
+        for i in 0..count {
+            self.write(offset + i * (unit_size as usize), unit_size, value);
+        }
+        count
+    }
 }
 
 /// MMIO region registration
@@ -653,6 +680,88 @@ impl AddressSpace {
         } else {
             self.ram.write_u64(addr, value);
         }
+    }
+    
+    /// Bulk fill memory with a repeated value (optimized for REP STOS)
+    /// 
+    /// This is significantly faster than individual writes because:
+    /// 1. Single MMIO region lookup instead of per-write lookup
+    /// 2. Uses MMIO handler's optimized fill() method if available
+    /// 3. For RAM, uses memset-style bulk fill
+    /// 
+    /// Returns number of units written
+    #[inline]
+    pub fn fill(&self, start_addr: PhysAddr, value: u64, count: usize, unit_size: u8) -> usize {
+        if count == 0 {
+            return 0;
+        }
+        
+        let total_bytes = count * (unit_size as usize);
+        let end_addr = start_addr + total_bytes as u64;
+        
+        // Check if entire range falls within a single MMIO region
+        if let Some((handler, offset)) = self.find_mmio(start_addr) {
+            // Verify the entire range is within this MMIO region
+            // (check end - 1 to handle exact boundary case)
+            if let Some((handler2, _)) = self.find_mmio(end_addr.saturating_sub(1)) {
+                if Arc::ptr_eq(&handler, &handler2) {
+                    // Entire range is in same MMIO region - use bulk fill
+                    return handler.fill(offset, value, count, unit_size);
+                }
+            }
+            // Range crosses regions - fall back to individual writes
+            for i in 0..count {
+                let addr = start_addr + (i * unit_size as usize) as u64;
+                if let Some((h, off)) = self.find_mmio(addr) {
+                    h.write(off, unit_size, value);
+                } else {
+                    match unit_size {
+                        1 => self.ram.write_u8(addr, value as u8),
+                        2 => self.ram.write_u16(addr, value as u16),
+                        4 => self.ram.write_u32(addr, value as u32),
+                        8 => self.ram.write_u64(addr, value),
+                        _ => {}
+                    }
+                }
+            }
+            return count;
+        }
+        
+        // No MMIO - fast path for RAM
+        // Use optimized bulk fill based on unit size
+        let slice = self.ram.as_slice_mut(start_addr as usize, total_bytes);
+        match unit_size {
+            1 => {
+                // Simple memset
+                slice.fill(value as u8);
+            }
+            2 => {
+                let val = value as u16;
+                for chunk in slice.chunks_exact_mut(2) {
+                    chunk.copy_from_slice(&val.to_le_bytes());
+                }
+            }
+            4 => {
+                let val = value as u32;
+                for chunk in slice.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&val.to_le_bytes());
+                }
+            }
+            8 => {
+                for chunk in slice.chunks_exact_mut(8) {
+                    chunk.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            _ => {
+                // Fallback for unusual sizes
+                for i in 0..count {
+                    let offset = i * (unit_size as usize);
+                    let bytes = &value.to_le_bytes()[..unit_size as usize];
+                    slice[offset..offset + unit_size as usize].copy_from_slice(bytes);
+                }
+            }
+        }
+        count
     }
     
     /// Get underlying physical memory (for firmware loading, etc.)

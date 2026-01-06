@@ -905,15 +905,21 @@ impl Interpreter {
     fn exec_stos(&self, cpu: &VirtualCpu, memory: &AddressSpace, instr: &DecodedInstr) -> JitResult<InstrResult> {
         // Determine operand size based on opcode and prefix
         // 0xAA = STOSB (byte)
-        // 0xAB = STOSW/STOSD/STOSQ (depends on operand-size prefix and mode)
-        let size: i64 = if (instr.opcode & 0xFF) == 0xAA {
+        // 0xAB = STOSW/STOSD/STOSQ (depends on operand-size prefix and REX.W)
+        let size: u8 = if (instr.opcode & 0xFF) == 0xAA {
             1  // STOSB always 1 byte
         } else {
-            // 0xAB: STOSW (with 0x66 prefix) or STOSD (default in 64-bit mode)
-            if instr.prefixes.op_size { 2 } else { 4 }
+            // 0xAB: STOSQ (REX.W), STOSW (0x66 prefix), or STOSD (default)
+            if instr.prefixes.rex_w {
+                8  // STOSQ: REX.W prefix means 64-bit
+            } else if instr.prefixes.op_size {
+                2  // STOSW: 0x66 prefix means 16-bit
+            } else {
+                4  // STOSD: default in 64-bit mode
+            }
         };
         
-        let delta = if cpu.get_df() { -size } else { size };
+        let df = cpu.get_df();
         
         // Handle REP prefix
         let count = if instr.prefixes.rep {
@@ -922,22 +928,43 @@ impl Interpreter {
             1
         };
         
-        let mut rdi = cpu.read_gpr(7);
-        let rax = cpu.read_gpr(0);
-        
-        for _ in 0..count {
-            match size {
-                1 => memory.write_u8(rdi, rax as u8),
-                2 => memory.write_u16(rdi, rax as u16),
-                4 => memory.write_u32(rdi, rax as u32),
-                _ => memory.write_u64(rdi, rax),
-            }
-            rdi = (rdi as i64 + delta) as u64;
+        if count == 0 {
+            return Ok(InstrResult::Continue(instr.rip + instr.len as u64));
         }
         
-        cpu.write_gpr(7, rdi);
-        if instr.prefixes.rep {
+        let rdi = cpu.read_gpr(7);
+        let rax = cpu.read_gpr(0);
+        
+        // For forward direction (DF=0), use optimized bulk fill
+        // For backward direction (DF=1), must iterate individually
+        if !df && instr.prefixes.rep && count > 1 {
+            // Use AddressSpace::fill() for bulk operation
+            let written = memory.fill(rdi, rax, count, size);
+            
+            // Update RDI: advance by (written * size) bytes
+            let new_rdi = rdi + (written * size as usize) as u64;
+            cpu.write_gpr(7, new_rdi);
             cpu.write_gpr(1, 0);  // RCX = 0 after REP
+        } else {
+            // Individual writes (backward direction or single iteration)
+            let delta: i64 = if df { -(size as i64) } else { size as i64 };
+            let mut addr = rdi;
+            
+            for _ in 0..count {
+                match size {
+                    1 => memory.write_u8(addr, rax as u8),
+                    2 => memory.write_u16(addr, rax as u16),
+                    4 => memory.write_u32(addr, rax as u32),
+                    8 => memory.write_u64(addr, rax),
+                    _ => memory.write_u32(addr, rax as u32),
+                }
+                addr = (addr as i64 + delta) as u64;
+            }
+            
+            cpu.write_gpr(7, addr);
+            if instr.prefixes.rep {
+                cpu.write_gpr(1, 0);  // RCX = 0 after REP
+            }
         }
         
         Ok(InstrResult::Continue(instr.rip + instr.len as u64))

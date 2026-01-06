@@ -909,7 +909,7 @@ impl VgaMmioHandler {
 
 impl crate::memory::MmioHandler for VgaMmioHandler {
     fn read(&self, offset: usize, size: u8) -> u64 {
-        let mut vga = self.vga.write().unwrap();
+        let vga = self.vga.read().unwrap();
         // offset is relative to VGA_MMIO_BASE (0xA0000)
         // Text buffer is at offset 0x18000 (0xB8000 - 0xA0000)
         if offset >= 0x18000 && offset < 0x18000 + TEXT_BUFFER_SIZE {
@@ -917,6 +917,24 @@ impl crate::memory::MmioHandler for VgaMmioHandler {
             match size {
                 1 => vga.read_vram_byte(text_offset) as u64,
                 2 => vga.read_vram_word(text_offset) as u64,
+                4 => {
+                    // 32-bit read: combine two words
+                    let lo = vga.read_vram_word(text_offset) as u64;
+                    let hi = if text_offset + 2 < TEXT_BUFFER_SIZE {
+                        vga.read_vram_word(text_offset + 2) as u64
+                    } else { 0 };
+                    lo | (hi << 16)
+                }
+                8 => {
+                    // 64-bit read: combine four words
+                    let mut val = 0u64;
+                    for i in 0..4 {
+                        if text_offset + i * 2 < TEXT_BUFFER_SIZE {
+                            val |= (vga.read_vram_word(text_offset + i * 2) as u64) << (i * 16);
+                        }
+                    }
+                    val
+                }
                 _ => vga.read_vram_byte(text_offset) as u64,
             }
         } else {
@@ -925,13 +943,6 @@ impl crate::memory::MmioHandler for VgaMmioHandler {
     }
     
     fn write(&self, offset: usize, size: u8, value: u64) {
-        // Log first few writes for debugging
-        static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count < 20 {
-            log::debug!("[VGA MMIO] Write: offset=0x{:x}, size={}, value=0x{:x}", offset, size, value);
-        }
-        
         let mut vga = self.vga.write().unwrap();
         // Text buffer is at offset 0x18000 (0xB8000 - 0xA0000)
         if offset >= 0x18000 && offset < 0x18000 + TEXT_BUFFER_SIZE {
@@ -939,10 +950,92 @@ impl crate::memory::MmioHandler for VgaMmioHandler {
             match size {
                 1 => vga.write_vram_byte(text_offset, value as u8),
                 2 => vga.write_vram_word(text_offset, value as u16),
+                4 => {
+                    // 32-bit write: two characters at once
+                    vga.write_vram_word(text_offset, value as u16);
+                    if text_offset + 2 < TEXT_BUFFER_SIZE {
+                        vga.write_vram_word(text_offset + 2, (value >> 16) as u16);
+                    }
+                }
+                8 => {
+                    // 64-bit write: four characters at once (optimal for REP STOSQ)
+                    for i in 0..4 {
+                        if text_offset + i * 2 < TEXT_BUFFER_SIZE {
+                            vga.write_vram_word(text_offset + i * 2, (value >> (i * 16)) as u16);
+                        }
+                    }
+                }
                 _ => vga.write_vram_byte(text_offset, value as u8),
             }
-            // Render text to framebuffer after write
-            vga.render_text_to_framebuffer();
+            // NOTE: Do NOT render here! Just mark dirty.
+            // Rendering is done by the display refresh loop (VNC/WebUI)
+            // to avoid O(n) render per write during bulk operations.
         }
+    }
+    
+    /// Optimized bulk fill for REP STOS operations
+    /// 
+    /// This is called by AddressSpace::fill() for VGA text buffer operations.
+    /// Instead of N individual writes, we fill the buffer directly in one pass.
+    fn fill(&self, offset: usize, value: u64, count: usize, unit_size: u8) -> usize {
+        // Only handle text buffer region (0x18000 = 0xB8000 - 0xA0000)
+        if offset < 0x18000 || offset >= 0x18000 + TEXT_BUFFER_SIZE {
+            // Not text buffer - fall back to individual writes
+            for i in 0..count {
+                self.write(offset + i * (unit_size as usize), unit_size, value);
+            }
+            return count;
+        }
+        
+        let text_offset = offset - 0x18000;
+        let mut vga = self.vga.write().unwrap();
+        
+        // Calculate how many units we can actually write
+        let bytes_per_unit = unit_size as usize;
+        let total_bytes = count * bytes_per_unit;
+        let available_bytes = TEXT_BUFFER_SIZE.saturating_sub(text_offset);
+        let actual_bytes = total_bytes.min(available_bytes);
+        let actual_count = actual_bytes / bytes_per_unit;
+        
+        if actual_count == 0 {
+            return 0;
+        }
+        
+        // Bulk fill the text buffer directly
+        let buf = &mut vga.text_buffer[text_offset..text_offset + actual_bytes];
+        
+        match unit_size {
+            1 => {
+                buf.fill(value as u8);
+            }
+            2 => {
+                let val_bytes = (value as u16).to_le_bytes();
+                for chunk in buf.chunks_exact_mut(2) {
+                    chunk.copy_from_slice(&val_bytes);
+                }
+            }
+            4 => {
+                let val_bytes = (value as u32).to_le_bytes();
+                for chunk in buf.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&val_bytes);
+                }
+            }
+            8 => {
+                let val_bytes = value.to_le_bytes();
+                for chunk in buf.chunks_exact_mut(8) {
+                    chunk.copy_from_slice(&val_bytes);
+                }
+            }
+            _ => {
+                // Fallback for unusual unit sizes
+                let val_bytes = value.to_le_bytes();
+                for chunk in buf.chunks_exact_mut(bytes_per_unit) {
+                    chunk.copy_from_slice(&val_bytes[..bytes_per_unit]);
+                }
+            }
+        }
+        
+        vga.dirty = true;
+        actual_count
     }
 }

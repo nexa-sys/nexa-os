@@ -1316,6 +1316,8 @@ impl Firmware for UefiFirmware {
         }
         
         // 64-bit DXE code at 0x7100
+        // Optimized: Use REP STOSQ (64-bit) instead of REP STOSW (16-bit)
+        // This reduces iterations from 2000 to 500, 4x faster
         let dxe_code: &[u8] = &[
             // ---- 64-bit Long Mode (DXE) ----
             // Set up 64-bit segments
@@ -1329,27 +1331,28 @@ impl Firmware for UefiFirmware {
             0x00, 0x7C, 0x00, 0x00,       // 0x7C00
             0x00, 0x00, 0x00, 0x00,
             
-            // Clear VGA screen first (80*25 = 2000 words at 0xB8000)
+            // Clear VGA screen using 64-bit writes (80*25*2 = 4000 bytes = 500 qwords)
+            // Pattern: 0x1F20 repeated 4 times = 0x1F201F201F201F20
             0x48, 0xBF,                   // MOV RDI, imm64
             0x00, 0x80, 0x0B, 0x00,       // 0xB8000
             0x00, 0x00, 0x00, 0x00,
-            0x66, 0xB8, 0x20, 0x1F,       // MOV AX, 0x1F20 (space + white on blue)
-            0xB9, 0xD0, 0x07, 0x00, 0x00, // MOV ECX, 2000 (80*25)
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x20, 0x1F, 0x20, 0x1F,       // 0x1F201F201F201F20 (4 chars: space+attr)
+            0x20, 0x1F, 0x20, 0x1F,
+            0xB9, 0xF4, 0x01, 0x00, 0x00, // MOV ECX, 500 (4000/8)
             0xFC,                         // CLD (clear direction flag)
-            0xF3, 0x66, 0xAB,             // REP STOSW (fill with AX)
+            0xF3, 0x48, 0xAB,             // REP STOSQ (fill with RAX, 8 bytes per iteration)
             
-            // Display "UEFI" on screen (VGA text at 0xB8000)
+            // Display "UEFI" on screen - use single 64-bit write for all 4 chars
+            // 'U'=0x55, 'E'=0x45, 'F'=0x46, 'I'=0x49, attr=0x1F
+            // Little-endian: [U,1F,E,1F,F,1F,I,1F] = 0x1F491F461F451F55
             0x48, 0xBF,                   // MOV RDI, imm64
             0x00, 0x80, 0x0B, 0x00,       // 0xB8000
             0x00, 0x00, 0x00, 0x00,
-            0x66, 0xB8, 0x55, 0x1F,       // MOV AX, 0x1F55 ('U' white on blue) - needs 66 prefix in 64-bit
-            0x66, 0x89, 0x07,             // MOV [RDI], AX
-            0x66, 0xB8, 0x45, 0x1F,       // MOV AX, 0x1F45 ('E')
-            0x66, 0x89, 0x47, 0x02,       // MOV [RDI+2], AX
-            0x66, 0xB8, 0x46, 0x1F,       // MOV AX, 0x1F46 ('F')
-            0x66, 0x89, 0x47, 0x04,       // MOV [RDI+4], AX
-            0x66, 0xB8, 0x49, 0x1F,       // MOV AX, 0x1F49 ('I')
-            0x66, 0x89, 0x47, 0x06,       // MOV [RDI+6], AX
+            0x48, 0xB8,                   // MOV RAX, imm64
+            0x55, 0x1F, 0x45, 0x1F,       // 'U' 0x1F 'E' 0x1F
+            0x46, 0x1F, 0x49, 0x1F,       // 'F' 0x1F 'I' 0x1F
+            0x48, 0x89, 0x07,             // MOV [RDI], RAX (write all 4 chars at once)
             
             // HLT loop (wait for boot device)
             0xF4,                         // HLT
